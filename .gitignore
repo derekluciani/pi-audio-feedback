@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Production Build Outputs
+dist/
+build/
+.next/
+.svelte-kit/
+
+# Local Environment / Secrets
+.env
+.env.local
+.env.*.local
+
+# System/IDE logs and cache
+.DS_Store
+.eslintcache
