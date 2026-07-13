@@ -149,7 +149,7 @@
       <td>Supported operating systems</td>
       <td>macOS only; macOS + Linux; macOS + Linux + Windows</td>
       <td>Declare macOS only unless portability is required</td>
-      <td>Support all OS that Pi supports</td>
+      <td>MVP: macOS, native Windows 10/11, and Ubuntu/Debian Linux. WSL is best effort only. See C-10 approval.</td>
     </tr>
     <tr>
       <td>D-15</td>
@@ -253,23 +253,24 @@ Implementation should not begin until the owner has decided:
 > Global personal extension; macOS only; TUI/local-host only; enabled completion ping only; bundled short asset; persisted global mute control; 1–2 second completion debounce; no per-tool or error sounds; no remote/RPC guarantee; no telemetry.
 
 
-## 6. Owner's Additional “Events” with audio feedback:
+## 6. Owner's Additional “Events” with audio feedback — MVP disposition
+
+The clarification outcomes in [PRD_Clarifications_and_Update_Plan.md](PRD_Clarifications_and_Update_Plan.md) supersede the original raw list below.
+
 Pi Alerts
-* “Operation aborted”
-    * System message shows when the user escapes `ESC` from an active Agent task.
-* “Error: {string}”
-    * This message shows when there’s nothing to return after a user calls a command.
+* “Operation aborted” — **in scope** as best-effort Esc-triggered abort feedback.
+* “Error: {string}” — **out of scope for MVP**.
 
 Run/End App
-* Pi startup (bash cmd: `pi`)
-* Pi shutdown (Pi cmd: `/quit`)
+* Pi startup (bash cmd: `pi`) — **in scope**.
+* Pi shutdown (Pi cmd: `/quit`) — **out of scope for MVP** because the public extension API cannot reliably distinguish `/quit` from other normal exit paths.
 
 Specific command types
-* User commands a `/skill`
-* User commands a Pi `/extension`
-* A `subagent` is invoked/called
+* User commands a `/skill` — **out of scope for MVP**.
+* User commands a Pi `/extension` — **out of scope for MVP**.
+* A `subagent` is invoked/called — **out of scope for MVP**.
 
-Settings UI (placeholder cmd: `audio:config`)
+Settings UI (command: `/audio:config`)
 The following events should map to existing Pi UI states: 
 * Root Directory enter - (key ENTER)
 * Root Directory exit - (key ESC)  

@@ -1,203 +1,381 @@
-# Pi SFX Extension — Requirements
+# Pi SFX Extension — Implementation Requirements and Plan
 
-**Status:** Planning — requirements pending owner decisions
+**Status:** Ready for owner review
 
 **Audience:** Extension owner and implementation team
 
-**Purpose:** Define implementation-ready requirements for a supplemental, local audio-notification extension for Pi. Owner choices are maintained separately in [PRD_sfx_extension.md](PRD_sfx_extension.md).
+**Purpose:** Source of truth for the published Pi SFX package. It converts the approved decisions in [PRD_sfx_extension.md](PRD_sfx_extension.md) and [PRD_Clarifications_and_Update_Plan.md](PRD_Clarifications_and_Update_Plan.md) into implementation requirements.
 
 ---
 
-## 1. Product Summary
+## 1. Product Definition
 
-Pi should optionally play short, non-blocking sounds to communicate meaningful agent state changes—primarily that Pi has completed its work and is waiting for the user.
-
-This is a **supplemental** notification channel. It must never block Pi, alter agent behavior, replace the TUI, or make routine activity noisy.
+Pi SFX is a published npm Pi package that plays short, local, themed sound effects for meaningful Pi lifecycle events and for its own Settings UI.
 
 ### Primary user story
 
-> As a Pi user, when I leave Pi working in the background, I hear a short ping once it has fully finished and is ready for my next input.
+> When Pi has finished all automatic work and is ready for me, I hear a short completion sound. I can also hear selected start, error, abort, startup, and settings-navigation feedback, then change every sound or theme from Pi.
 
-### Success criteria
+### Product principles
 
-- The user hears one completion sound after Pi is truly idle.
-- The feature is opt-in or can be disabled immediately.
-- Playback failures never interrupt or delay Pi.
-- Routine agent/tool activity does not create an audio storm.
-
----
-
-## 2. Confirmed Technical Direction
-
-| Area | Decision / fact | Rationale |
-|---|---|---|
-| Pi integration | Build as a Pi extension | Pi extensions subscribe to lifecycle events and can use Node.js APIs. No Pi core change is needed. |
-| Recommended install scope | Global extension: `~/.pi/agent/extensions/` | Audio feedback is normally a personal preference that should work in every project. |
-| Completion event | `agent_settled` | This fires only after retries, automatic compaction/retry, and queued follow-ups have finished. |
-| Audio mechanism | Spawn a local OS audio player through Node `child_process` | Pi has no native audio/SFX API. Playback must be detached/non-blocking. |
-| Default execution mode | TUI only (`ctx.mode === "tui"`) | Prevents unexpected sound in print, JSON, automation, and most headless use. |
-| Sound behavior | Short local sound, best effort | A missing player/device or playback failure must be silent from Pi's perspective. |
-
-### Important semantic limitation
-
-`agent_settled` means **Pi is idle**, not **the task objectively succeeded**. The completion sound should therefore be a neutral “ready” ping. Known tool failures can have a separate error sound, but no event alone can reliably determine whether every user goal was achieved.
+- **Supplemental:** Audio augments Pi; it never changes agent, tool, or session behavior.
+- **Local and private:** No network requests, telemetry, recordings, or task-content transmission at runtime.
+- **Best effort:** A playback failure must never delay, fail, or add output to Pi.
+- **Configurable:** All in-scope cues are enabled after first install; users can enable/disable each independently.
+- **Themed:** The same logical event uses a sound selected from the active theme.
 
 ---
 
-## 3. Scope
+## 2. Scope
 
-### In scope
+### MVP in scope
 
-- Playback of short local sound effects for selected Pi lifecycle events.
-- A completion sound when Pi is fully settled and awaiting input.
-- Optional start and error sounds.
-- User configuration for enablement and selected sound behavior.
-- Platform-aware player selection and graceful failure.
-- Rate limiting/debouncing and overlap prevention.
+- A published npm Pi package, installable through `pi install npm:<package>`, for global personal use.
+- Local playback only in Pi TUI mode (`ctx.mode === "tui"`).
+- Build-time conversion of curated `@web-kits/audio` patches to bundled WAV assets.
+- Supported themes: **Core** (default), **Retro**, **Organic**, and **Soft**.
+- Global persisted configuration and the custom `/audio:config` Settings UI.
+- App-start, agent-start, tool-error, agent-abort, agent-settled/completion, and Settings UI cues.
+- macOS, native Windows 10/11, and Ubuntu/Debian Linux support as defined in Section 5.
 
-### Out of scope for the first release
+### MVP out of scope
 
-- Changing Pi’s agent workflow, tool execution, or TUI behavior.
-- Streaming audio, speech synthesis, music, or long-running audio.
-- Sending notifications to another device or browser client.
-- Guaranteeing a sound when the Pi process runs remotely.
-- Inferring whether an arbitrary natural-language task was successful.
-- A custom audio mixer, audio-device picker, or system Do Not Disturb integration unless approved in the decision register.
-
----
-
-## 4. Notification Moments and Proposed Defaults
-
-The extension should prioritize events that genuinely require awareness. Events marked **optional** should be disabled by default unless the owner decides otherwise.
-
-| Moment | Pi signal | Proposed default | Recommended cue | Notes |
-|---|---|---:|---|---|
-| Pi begins an agent run | `agent_start` | Off | subtle tick | A run may start again for retries or continuations; it is not necessarily a new user task. |
-| Pi completes all automatic work and waits for input | `agent_settled` | **On** | short ping | Primary feature. Do not use `agent_end`, which may precede retries/follow-ups. |
-| A tool execution fails | `tool_execution_end` with `isError: true` | Off | distinct soft error tone | Multiple tools may fail in one run; rate-limit/group these. |
-| An individual tool finishes successfully | `tool_execution_end` | Off | optional tick | Usually too noisy, especially in parallel tool mode. |
-| A turn completes | `turn_end` | Off | none | A turn is not final completion; Pi may call more tools. |
-| Pi asks for user input | no dedicated event | TBD | attention ping | Can be approximated at `agent_settled` by inspecting the final assistant response, but question detection is heuristic and should not be relied upon for MVP. |
-| User aborts work | no dedicated documented event | Off / future | cancel cue | Requires local state tracking; completion behavior after abort needs explicit product policy. |
-| Extension-driven approval dialog opens | extension-controlled UI call | Future | attention ping | Only possible for dialogs created/controlled by this extension; it cannot universally detect all Pi UI prompts. |
-| Session starts/reloads, model changes, compaction | session/model events | Off | none | Not normally worth an audible cue. |
-
-### Noise-control requirement
-
-The extension **MUST NOT** emit sounds for every streamed message, tool update, or normal successful tool call by default. In parallel tool mode, tool completion events can interleave and arrive in completion order.
+- Shutdown sound. A `/quit`-only cue is not reliably detectable through Pi’s public extension API.
+- Generic `Error: {string}` UI-message sounds.
+- `/skill`, `/extension`, and `subagent` invocation sounds, including integration with separately installed extensions.
+- RPC, JSON, print, CI, remote-host, and remote-client playback.
+- WSL support beyond best-effort manual experimentation.
+- User-provided sound paths, arbitrary player commands, custom volume controls, audio-device selection, speech, streaming audio, or music.
+- Telemetry, analytics, diagnostic logs, and runtime network downloads.
 
 ---
 
-## 5. Decision Dependency
+## 3. Package and Audio Architecture
 
-Implementation choices and their approved outputs are maintained in [PRD_sfx_extension.md](PRD_sfx_extension.md). Requirements that reference a decision ID (for example, D-11) are conditional on that approved decision.
+### 3.1 Package requirements
 
----
-
-## 6. Functional Requirements
-
-### FR-1: Completion notification
-
-1. When enabled and Pi emits `agent_settled`, the extension **MUST** attempt one completion cue.
-2. The cue **MUST NOT** fire at `agent_end` in place of `agent_settled`.
-3. It **MUST** be non-blocking: Pi may continue its event processing without waiting for the audio player to exit.
-4. It **MUST** run only in configured modes; the recommended default is `ctx.mode === "tui"`.
-
-### FR-2: Optional event notifications
-
-1. Start and error notifications **MUST** be independently configurable if included.
-2. An error notification **MUST** use `tool_execution_end.isError === true`; it must not inspect or modify tool execution.
-3. Tool and turn sounds **MUST** remain disabled by default.
-
-### FR-3: Controls and persistence
-
-1. The extension **MUST** provide a way to enable/disable all sounds without editing source code.
-2. The extension **SHOULD** provide separate event toggles and a sound-selection setting if more than one cue is implemented.
-3. Configuration errors **MUST** fall back safely to quiet defaults or documented defaults and must not crash Pi.
-4. The configuration location and persistence behavior must follow D-19 through D-21.
-
-### FR-4: Playback behavior
-
-1. Playback **MUST** use an argument-array process invocation, not shell-interpolated command text.
-2. Player stdout/stderr **MUST NOT** corrupt Pi's TUI or JSON output.
-3. A missing player, unavailable audio device, invalid asset, or child-process error **MUST NOT** throw from the Pi event handler or degrade agent execution.
-4. The extension **MUST** avoid overlapping sound storms. Exact debounce/grouping policy is defined by D-11.
-5. Sounds **SHOULD** be short (target: under one second for the completion cue).
-
-### FR-5: Lifecycle safety
-
-1. The extension factory **MUST NOT** start persistent timers, watchers, sockets, or audio-manager processes.
-2. Any session-scoped resources must start in `session_start` or on demand.
-3. The extension **MUST** clean up timers and tracked child processes in `session_shutdown`, including reload, quit, new, resume, and fork flows.
-4. Handler errors must be caught locally where practical; Pi logs extension errors and continues, but the feature must not rely on that safety net.
-
----
-
-## 7. Non-Functional Requirements
-
-| Category | Requirement |
+| Requirement | Specification |
 |---|---|
-| Reliability | Audio is best-effort only. A playback failure must never block a tool, a model request, or final settlement. |
-| Performance | Event handling should be effectively immediate; no audio command is awaited on the agent lifecycle path. |
-| Noise | Default configuration produces no more than one sound for a normal completed user request. |
-| Security | The extension runs with full user permissions. It must use trusted bundled assets or validated paths and must not execute owner-configurable shell strings. |
-| Privacy | No network calls, telemetry, recordings, or task-content transmission unless separately approved. |
-| Compatibility | The extension must tolerate Pi reload and missing platform players. Unsupported environments should silently disable playback or emit an optional local diagnostic. |
-| Maintainability | Platform playback adapters and event policy should be isolated so support can expand without changing core notification logic. |
+| Distribution | Public npm package with the `pi-package` keyword and a `pi.extensions` manifest. |
+| Pi resource | One TypeScript extension entry point in the package `extensions/` directory, declared in `package.json` under the top-level `pi` object: `{ "pi": { "extensions": ["./extensions"] } }`. |
+| Runtime behavior | The installed package must work without downloading patches or assets. |
+| Runtime dependencies | Keep runtime dependencies minimal; do not require a native Node audio engine. |
+| Build dependencies | Pin `@web-kits/audio` and the Node Web Audio renderer/polyfill used to generate WAV assets. |
+| Assets | Include generated WAV assets in the published npm tarball. The runtime must resolve assets relative to the installed package, never from the working project. |
+| Attribution | Preserve required MIT-license attribution/notices for `@web-kits/audio` and the curated patches. |
+| Package metadata | Before publish, define npm package name/scope, repository URL, versioning policy, license, README, supported Pi version, and supported Node version. |
 
----
+### 3.2 Approved patch-to-WAV pipeline
 
-## 8. Platform Constraints
+`@web-kits/audio` is a Web Audio library: its patches are JSON sound definitions rather than guaranteed ready-to-play WAV files. Pi runs in Node.js, where browser `AudioContext` playback is not available.
 
-Pi does not provide an audio abstraction. The extension will invoke a player available on the host that runs Pi.
-
-| Environment | Likely approach | Constraint |
-|---|---|---|
-| macOS | `afplay <sound-file>` | Straightforward local baseline. |
-| Linux | `paplay`, `aplay`, or a configured player | Audio stacks and installed players differ by distribution. |
-| Windows | PowerShell/.NET or a dedicated player | Must be tested separately; Windows Terminal/WSL may run audio on a different host. |
-| SSH/remote Pi | Host-side player only | The sound occurs on the remote host, not automatically on the local terminal machine. |
-| Pi RPC client | No extension audio protocol | A client-side feature/integration would be required for local-client sound. |
-| Pi JSON/print/CI | Extension still runs | Default TUI-only gating avoids unexpected audio and output pollution. |
-
----
-
-## 9. Technical Event Model
+The package **MUST** use this pipeline:
 
 ```text
-user prompt
-  -> agent_start              (optional start cue)
-  -> one or more turns
-       -> zero or more tools  (optional error cue on failed tool end)
-  -> agent_end                (NOT final enough for completion cue)
-  -> agent_settled            (primary completion/ready cue)
+Pinned curated patch JSON
+  -> build-time Node Web Audio polyfill + @web-kits/audio offline rendering
+  -> generated WAV assets, committed or generated before publish
+  -> WAV assets included in npm package
+  -> OS-specific player adapter at Pi runtime
 ```
 
-Pi can automatically retry, compact/retry, or process queued follow-ups after `agent_end`. `agent_settled` is the correct lifecycle boundary for the “ready” sound.
+Requirements:
 
-In parallel tool mode, starts are source-ordered but tool updates and ends can interleave; ends arrive in completion order. Any per-tool audio policy therefore needs a debounce/grouping rule.
+1. Patch acquisition and WAV generation happen during development/build/release, not during a user’s Pi session.
+2. The build **MUST** validate every supported theme against the event-to-theme mapping in Section 7.
+3. A release **MUST** fail if an enabled event has no mapped sound in any supported theme.
+4. WAV generation settings (sample rate, channel count, duration/tail policy) **MUST** be deterministic and recorded in build documentation.
+5. Runtime playback **MUST** use only the packaged WAV assets; it must not synthesize Web Audio live.
+
+### 3.3 Easiest macOS user test
+
+The Settings UI provides the primary self-test:
+
+1. Install or temporarily run the package (`pi install npm:<package>` or `pi -e ./path/to/package`).
+2. Start Pi locally on macOS.
+3. Run `/audio:config` → **Select Audio Theme**.
+4. Confirming a theme plays that theme’s preview cue through `afplay`.
+5. Run a normal prompt to confirm agent-start and final-settlement cues.
+
+The theme preview is a user-facing playback test. It must display a non-fatal Settings UI notice if the macOS player cannot be started; it must not write diagnostics or errors to normal Pi output.
 
 ---
 
-## 10. Acceptance Criteria for the MVP
+## 4. Runtime Playback Contract
 
-The implementation phase is ready to complete when all applicable criteria below pass.
+### 4.1 General behavior
 
-1. A locally run TUI session produces exactly one completion ping after a normal prompt finishes and Pi becomes idle.
-2. A run with multiple turns/tools still produces no completion ping until final `agent_settled`.
-3. Completion playback does not wait for the player process, delay Pi, or add text to the TUI/stdout.
-4. Disabling the extension's audio setting prevents all playback immediately or by the documented configuration reload behavior.
-5. Missing/unavailable audio playback exits safely without an uncaught extension error or disruption to Pi.
-6. In JSON, print, and configured non-TUI modes, no audio is played by default.
-7. Reloading or replacing a Pi session does not leave timers or child processes that cause duplicate later sounds.
-8. If error notifications are approved, simultaneous/multiple failed tools follow the selected grouping rule and do not produce an uncontrolled burst.
-9. The supported OS/backend matrix selected in D-14 through D-16 is manually verified.
+1. Audio requests **MUST** be non-blocking. Pi event handlers must not await the player process.
+2. Player processes **MUST** use argument arrays, never shell-interpolated commands.
+3. Player `stdin`, `stdout`, and `stderr` **MUST** be ignored or captured so no player text corrupts Pi’s TUI, JSON, or print output.
+4. Missing players, missing devices, invalid assets, and process errors **MUST** fail quietly from Pi’s perspective.
+5. The extension factory **MUST NOT** create persistent processes, watchers, or timers. Session resources start on demand and are cleaned up in `session_shutdown`.
+6. `session_shutdown` cleanup must terminate only tracked, still-running player children; short one-shot sounds normally exit naturally.
+
+### 4.2 Priority, debounce, and overlap rules
+
+| Rule | Requirement |
+|---|---|
+| Completion priority | For a non-aborted run, `agent_settled` completion has the highest priority. When requested, it drops lower-priority cues that are pending or would collide with it. It does not retroactively stop a cue already heard. A confirmed abort replaces completion for that run. |
+| Tool errors | Every failed tool is recorded. The scheduler emits at most one `tool-error` cue per **1,000 ms** group; later failures in that window are coalesced into the same cue. |
+| Other events | Event requests are queued only if no higher-priority cue is pending/starting. Lower-priority UI navigation cues may be dropped under load. |
+| Concurrent playback | The scheduler must avoid starting overlapping cues. It may wait for the current short cue to complete or discard the lower-priority request. |
+| Completion semantics | Completion means Pi has settled and will not automatically continue. It does not assert that the user’s task was objectively successful. |
+
+Recommended priority order: completion > abort > tool error > theme preview/selection > app start > agent start > Settings UI navigation.
 
 ---
 
-## 11. Reference Audit Sources
+## 5. Supported Platform Contract
 
-- Pi extension lifecycle and event semantics: `docs/extensions.md`, especially **Agent Events**, **Tool Events**, **Long-lived resources and shutdown**, and **Mode Behavior**.
-- Example completion notification: `examples/extensions/notify.ts`. Its use of `agent_end` is suitable for a basic notification example, but this extension should use `agent_settled` for true final completion.
-- Extension event type definitions: `dist/core/extensions/types.d.ts` (`AgentEndEvent`, `AgentSettledEvent`, `ToolExecutionEndEvent`).
+The extension plays audio on the computer that runs the Pi extension. It does not send an audio instruction to an SSH client, RPC client, or another device.
 
+| Target | MVP adapter | Support policy |
+|---|---|---|
+| macOS | `afplay <packaged-wav>` | Supported; test on Apple Silicon and Intel where available. |
+| Ubuntu/Debian Linux | `paplay <packaged-wav>`; fall back to `aplay <packaged-wav>` | Supported when PulseAudio/PipeWire or ALSA playback is available. |
+| Native Windows 10/11 | PowerShell/.NET WAV playback in a spawned process | Supported; test in Windows Terminal and a standard PowerShell environment. |
+| WSL | No adapter guarantee | Best effort only; excluded from MVP acceptance. |
+| SSH/remote Pi, RPC, JSON, print, CI | No playback | Explicitly disabled by mode/local-host policy. |
+
+Requirements:
+
+1. A platform adapter must be selected from `process.platform` without probing via shell text.
+2. Linux may try the documented fallback chain only; it must not scan arbitrary commands or install system packages.
+3. If no supported player is available, the extension is silent. The theme-preview action may show an in-UI, non-persistent failure notice.
+4. Runtime audio must remain local to TUI mode. `ctx.mode !== "tui"` must suppress playback.
+
+---
+
+## 6. Configuration and Settings UI
+
+### 6.1 Global configuration
+
+Configuration is global, not project-specific, and persists across Pi sessions. Project-local settings are not read.
+
+**Configuration root:** Pi's configured global agent directory, resolved through Pi configuration (`getAgentDir()`), not a hardcoded `.pi` path.
+
+**Default file:** `<agentDir>/pi-extension-sfx.json` (normally `~/.pi/agent/pi-extension-sfx.json`)
+
+**Schema version:** `1`
+
+```json
+{
+  "version": 1,
+  "theme": "core",
+  "events": {
+    "appStart": true,
+    "agentStart": true,
+    "toolError": true,
+    "agentAborted": true,
+    "agentSettled": true,
+    "settingsRootEnter": true,
+    "settingsRootExit": true,
+    "settingsSubmenuEnter": true,
+    "settingsSubmenuExit": true,
+    "settingsNavigate": true,
+    "settingsToggleOn": true,
+    "settingsToggleOff": true,
+    "settingsOptionSelect": true,
+    "settingsThemePreview": true
+  }
+}
+```
+
+Requirements:
+
+- First install creates or uses the above defaults: **Core** theme and all in-scope events enabled.
+- Invalid, unreadable, or unsupported-version configuration must not crash Pi. The extension uses safe defaults and may show a Settings UI notice only when the user opens `/audio:config`.
+- **Turn all sounds on** sets every event toggle to `true`.
+- **Turn all sounds off** sets every event toggle to `false`.
+- These actions intentionally do not use a separate “master audio” setting; the user-facing behavior is exactly the selected root-menu language.
+
+### 6.2 `/audio:config` custom TUI
+
+`/audio:config` is an extension command available in TUI mode. It opens an extension-owned custom component; it does not alter or observe Pi’s built-in `/settings` component.
+
+Root menu:
+
+1. **Turn all sounds on**
+2. **Turn all sounds off**
+3. **Edit individual sound playback**
+4. **Select Audio Theme**
+
+| UI interaction | Key | Logical event | Required behavior |
+|---|---|---|---|
+| Open root settings screen | command / Enter | `settingsRootEnter` | Play when enabled. |
+| Exit root settings screen | Esc | `settingsRootExit` | Persist any prior changes, then play when enabled. |
+| Navigate a list | Up / Down | `settingsNavigate` | Play when enabled; low priority. |
+| Open individual-event or theme submenu | Enter | `settingsSubmenuEnter` | Play when enabled. |
+| Exit a submenu | Esc | `settingsSubmenuExit` | Play when enabled. |
+| Enable an event | Enter | `settingsToggleOn` | Save first, then play the enabled-state cue. |
+| Disable an event | Enter | `settingsToggleOff` | Play before saving the disabled state, so the action remains audible. |
+| Select a radio/choice option | Enter | `settingsOptionSelect` | Persist selection, then play using the newly selected theme where applicable. |
+| Preview selected theme | Enter in theme selector | `settingsThemePreview` | Attempt a test sound through the selected theme/player; show a non-fatal UI notice only on launch failure. |
+
+Mute/re-enable behavior: when all event toggles are off, Settings UI navigation is silent. Selecting **Turn all sounds on** sets the toggles to on, then plays the confirmation cue.
+
+### 6.3 Individual sound playback editor
+
+The editor must show one toggle for every currently in-scope non-preview event. It must explain that a disabled event will not play, including during Settings navigation. The theme-preview action remains available while choosing a theme and is governed by `settingsThemePreview`.
+
+---
+
+## 7. Event Specification and Theme Mapping
+
+### 7.1 Pi event contract
+
+| Logical event | Pi trigger / implementation strategy | Reliability | Default | Notes |
+|---|---|---|---:|---|
+| `appStart` | `session_start` with `reason === "startup"` | Reliable | On | Fires after the extension is loaded, not before Pi process initialization. |
+| `agentStart` | `agent_start` | Reliable | On | May fire again for retries/continuations. |
+| `toolError` | `tool_execution_end` where `isError === true` | Reliable | On | Uses the 1,000 ms error debounce group. |
+| `agentAborted` | Record Esc during active TUI run; confirm an aborted final assistant result before cue | Best effort | On | Pi has no dedicated public `agent_aborted` event. Never cue merely because Esc was pressed. A confirmed abort suppresses completion for that run. |
+| `agentSettled` | `agent_settled` | Reliable | On | Primary completion cue for a non-aborted run; do not substitute `agent_end`. |
+| `settings*` | State transitions inside `/audio:config` | Reliable in extension UI | On | Not available for Pi’s built-in Settings UI. |
+
+### 7.2 Owner event-to-theme-patch mapping
+
+The owner specifies the patch sound name for each logical event and supported theme below. The implementation team must not infer a missing mapping. `TBD` means the mapping must be supplied before the corresponding theme/event is released.
+
+| Logical event | Suggested semantic sound | Core patch sound | Retro patch sound | Organic patch sound | Soft patch sound |
+|---|---|---|---|---|---|
+| `appStart` | notification / info | **TBD** | **TBD** | **TBD** | **TBD** |
+| `agentStart` | send / info | **TBD** | **TBD** | **TBD** | **TBD** |
+| `toolError` | error | **TBD** | **TBD** | **TBD** | **TBD** |
+| `agentAborted` | warning / undo | **TBD** | **TBD** | **TBD** | **TBD** |
+| `agentSettled` | notification / success | **TBD** | **TBD** | **TBD** | **TBD** |
+| `settingsRootEnter` | page-enter | **TBD** | **TBD** | **TBD** | **TBD** |
+| `settingsRootExit` | page-exit | **TBD** | **TBD** | **TBD** | **TBD** |
+| `settingsSubmenuEnter` | expand | **TBD** | **TBD** | **TBD** | **TBD** |
+| `settingsSubmenuExit` | collapse | **TBD** | **TBD** | **TBD** | **TBD** |
+| `settingsNavigate` | hover / tap | **TBD** | **TBD** | **TBD** | **TBD** |
+| `settingsToggleOn` | toggle-on | **TBD** | **TBD** | **TBD** | **TBD** |
+| `settingsToggleOff` | toggle-off | **TBD** | **TBD** | **TBD** | **TBD** |
+| `settingsOptionSelect` | select | **TBD** | **TBD** | **TBD** | **TBD** |
+| `settingsThemePreview` | notification | **TBD** | **TBD** | **TBD** | **TBD** |
+
+Build validation must verify every table value against the pinned patch source and verify the matching generated WAV exists in the published asset directory.
+
+---
+
+## 8. Functional Requirements
+
+### FR-1: Event handling
+
+1. The extension must register only the hooks required by Section 7.
+2. `agent_settled` is the only completion trigger.
+3. `tool_execution_end` is observation-only; the extension must not block or mutate tools.
+4. Abort detection must use a session-scoped pending-Esc state plus confirmation that the active run actually aborted. A confirmed abort records that outcome, emits `agentAborted`, suppresses `agentSettled` completion for that run, and clears pending state after settlement or shutdown.
+5. All events must pass through the same scheduler, config toggle check, theme mapping lookup, and platform adapter.
+
+### FR-2: Theme and assets
+
+1. Core, Retro, Organic, and Soft must be shipped with the MVP only after Section 7 mappings are complete.
+2. Runtime theme selection must take effect immediately for future cues and persist globally.
+3. Theme selection must use only generated, packaged assets and never accept arbitrary file paths or URLs.
+4. A patch/version update must regenerate WAV assets and rerun mapping validation before publication.
+
+### FR-3: User controls
+
+1. `/audio:config` must be documented in the package README.
+2. Changes in Settings UI must be written atomically enough to avoid corrupting the global configuration file.
+3. The UI must use Pi’s custom TUI APIs and configured keybinding-aware controls where available.
+4. The theme selector must provide the preview/self-test defined in Section 3.3.
+
+### FR-4: Security and privacy
+
+1. Package code and all bundled assets run with the installing user’s permissions; the README must state this clearly.
+2. No user-controlled command string, file path, remote URL, or project-local configuration may determine what process runs or what asset plays.
+3. The extension must make no network calls at runtime.
+4. The extension must not collect, emit, or persist telemetry/log data. The only persisted data is the global user audio configuration.
+
+---
+
+## 9. Implementation Plan
+
+1. **Package foundation**
+   - Create npm package metadata, Pi manifest, extension entry point, build scripts, tests, README, license notices, and package-asset inclusion rules.
+
+2. **Patch ingestion and asset build**
+   - Pin the selected Core, Retro, Organic, and Soft patch sources.
+   - Add the deterministic patch-to-WAV build script.
+   - Implement the Section 7 mapping validator and fail builds for missing event/theme assets.
+
+3. **Runtime audio subsystem**
+   - Implement configuration read/write and schema migration/version validation.
+   - Implement the event scheduler, priority/debounce rules, theme asset resolver, and tracked non-blocking child-process lifecycle.
+   - Implement macOS, Linux, and native Windows adapters.
+
+4. **Pi integration**
+   - Register lifecycle/tool hooks, mode gating, best-effort abort detection, and session cleanup.
+   - Implement `/audio:config` with the approved root menu, individual event toggles, theme selector, preview, and navigation cues.
+
+5. **Verification and packaging**
+   - Run automated asset/config/scheduler tests.
+   - Perform the platform acceptance matrix in Section 10.
+   - Publish a prerelease npm version; verify install, update, disable, and temporary `pi -e` workflows on a clean macOS user profile before wider release.
+
+---
+
+## 10. Acceptance Criteria and Test Matrix
+
+### Core behavior
+
+1. In local TUI mode, one normal, non-aborted agent request produces an agent-start cue and exactly one final completion cue after `agent_settled`.
+2. A multi-turn/retry/follow-up run produces no completion cue before final settlement.
+3. Each tool failure is eligible for an error cue; failures within one second follow the approved debounce rule.
+4. Completion drops pending/colliding lower-priority cues but does not interrupt already heard cues.
+5. An Esc press produces an abort cue only when the corresponding active agent run actually aborts; that run does not subsequently produce a completion cue.
+6. All in-scope cues are enabled in fresh configuration; each can be disabled and re-enabled through `/audio:config`.
+7. Turning all sounds off produces silence; turning all sounds on restores all cues and plays the confirmation cue.
+8. Selecting each theme persists the selection, previews its packaged WAV, and affects subsequent cues immediately.
+
+### Package and asset behavior
+
+1. `npm pack` includes the extension code, generated WAV assets, licenses/notices, and required package manifest files.
+2. Build validation fails for an undefined event-to-theme patch mapping or missing generated WAV.
+3. Package installation and temporary execution work through Pi package mechanisms.
+4. Runtime network access is not required or attempted.
+
+### Platform behavior
+
+| Test | macOS | Ubuntu/Debian Linux | Native Windows 10/11 | WSL |
+|---|---:|---:|---:|---:|
+| Supported player selected | Required | Required | Required | Best effort only |
+| Theme preview audible | Required | Required | Required | Not required |
+| Agent lifecycle sounds audible | Required | Required | Required | Not required |
+| Missing-player failure is non-fatal | Required | Required | Required | Not required |
+| Pi TUI/stdout remains clean | Required | Required | Required | Not required |
+
+### Mode and lifecycle behavior
+
+1. JSON, print, RPC, CI, and remote-host configurations emit no audio by default.
+2. Player stdout/stderr never appears in Pi output.
+3. Reload, session switch, fork, new session, and quit clean up tracked session state without duplicate later cues.
+4. No automated test requires actual speakers; adapter invocations and scheduler decisions are unit-testable with mocks.
+
+---
+
+## 11. Owner Review Checklist
+
+Please review and approve or edit the following before implementation begins:
+
+1. **Section 7.2:** Fill in the Core, Retro, Organic, and Soft patch-sound mappings for every event.
+2. **Tool-error policy:** Confirm that a one-second debounce means the first error cue plays and subsequent tool errors in that window are coalesced into that one cue, rather than each producing a later queued cue.
+3. **Package identity:** Confirm the public npm package name/scope and repository/license metadata.
+4. **Configuration file:** Confirm `<agentDir>/pi-extension-sfx.json` (normally `~/.pi/agent/pi-extension-sfx.json`).
+5. **Platform contract:** Confirm the supported macOS/native Windows/Ubuntu-Debian matrix and WSL exclusion.
+6. **Settings behavior:** Confirm `/audio:config`, the four root options, theme-preview self-test, and mute/re-enable behavior.
+7. **Event scope:** Confirm shutdown, generic UI errors, skills, extension commands, and subagent cues remain out of scope for MVP.
+
+---
+
+## 12. Reference Sources
+
+- Pi extension lifecycle, mode, tool, and cleanup semantics: `docs/extensions.md`.
+- Pi package manifest and dependency rules: `docs/packages.md`.
+- Custom Settings UI patterns and keyboard handling: `docs/tui.md` and `docs/keybindings.md`.
+- Pi extension types: `dist/core/extensions/types.d.ts`.
+- `@web-kits/audio` patch format and library catalog: https://audio.raphaelsalaja.com/integrations/patches and https://audio.raphaelsalaja.com/library.
+- `@web-kits/audio` upstream offline WAV-rendering example: https://github.com/raphaelsalaja/audio.
