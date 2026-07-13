@@ -4,7 +4,7 @@
 
 **Audience:** Extension owner and implementation team
 
-**Purpose:** Source of truth for the published Pi SFX package. It converts the approved decisions in [PRD_sfx_extension.md](PRD_sfx_extension.md) and [PRD_Clarifications_and_Update_Plan.md](PRD_Clarifications_and_Update_Plan.md) into implementation requirements.
+**Purpose:** The sole source of truth for the published Pi SFX package, including its approved requirements, specifications, implementation plan, and acceptance criteria.
 
 ---
 
