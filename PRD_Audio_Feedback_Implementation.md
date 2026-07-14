@@ -1,16 +1,13 @@
-# Pi SFX Extension — Implementation Requirements and Plan
+# Pi-Audio-Feedback Extension — Implementation Requirements and Plan
 
-**Status:** Ready for owner review
-
-**Audience:** Extension owner and implementation team
-
-**Purpose:** The sole source of truth for the published Pi SFX package, including its approved requirements, specifications, implementation plan, and acceptance criteria.
+**Status:** Ready for implementor review
+**Purpose:** The sole source of truth for the published Pi-Audio-Feedback package, including its approved requirements, specifications, implementation plan, and acceptance criteria.
 
 ---
 
 ## 1. Product Definition
 
-Pi SFX is a published npm Pi package that plays short, local, themed sound effects for meaningful Pi lifecycle events and for its own Settings UI.
+Pi-Audio-Feedback is a published npm Pi package that plays short, local, themed sound effects for meaningful Pi lifecycle events and for its own Settings UI.
 
 ### Primary user story
 
@@ -30,7 +27,7 @@ Pi SFX is a published npm Pi package that plays short, local, themed sound effec
 
 ### MVP in scope
 
-- A published npm Pi package, installable through `pi install npm:<package>`, for global personal use.
+- A published npm Pi package, installable through `pi install npm:pi-audio-feedback`, for global personal use.
 - Local playback only in Pi TUI mode (`ctx.mode === "tui"`).
 - Build-time conversion of curated `@web-kits/audio` patches to bundled WAV assets.
 - Supported themes: **Core** (default), **Retro**, **Organic**, and **Soft**.
@@ -91,7 +88,7 @@ Requirements:
 
 The Settings UI provides the primary self-test:
 
-1. Install or temporarily run the package (`pi install npm:<package>` or `pi -e ./path/to/package`).
+1. Install or temporarily run the package (`pi install npm:pi-audio-feedback` or `pi -e ./path/to/package`).
 2. Start Pi locally on macOS.
 3. Run `/audio:config` → **Select Audio Theme**.
 4. Confirming a theme plays that theme’s preview cue through `afplay`.
@@ -122,7 +119,15 @@ The theme preview is a user-facing playback test. It must display a non-fatal Se
 | Concurrent playback | The scheduler must avoid starting overlapping cues. It may wait for the current short cue to complete or discard the lower-priority request. |
 | Completion semantics | Completion means Pi has settled and will not automatically continue. It does not assert that the user’s task was objectively successful. |
 
-Recommended priority order: completion > abort > tool error > theme preview/selection > app start > agent start > Settings UI navigation.
+Recommended priority order:
+
+1. Completion
+2. Abort
+3. Tool error
+4. Theme preview/selection
+5. App start
+6. Agent start
+7. Settings UI navigation.
 
 ---
 
@@ -155,7 +160,7 @@ Configuration is global, not project-specific, and persists across Pi sessions. 
 
 **Configuration root:** Pi's configured global agent directory, resolved through Pi configuration (`getAgentDir()`), not a hardcoded `.pi` path.
 
-**Default file:** `<agentDir>/pi-extension-sfx.json` (normally `~/.pi/agent/pi-extension-sfx.json`)
+**Default file:** `<agentDir>/pi-audio-feedback.json` (normally `~/.pi/agent/pi-audio-feedback.json`)
 
 **Schema version:** `1`
 
@@ -238,22 +243,22 @@ The editor must show one toggle for every currently in-scope non-preview event. 
 
 The owner specifies the patch sound name for each logical event and supported theme below. The implementation team must not infer a missing mapping. `TBD` means the mapping must be supplied before the corresponding theme/event is released.
 
-| Logical event | Suggested semantic sound | Core patch sound | Retro patch sound | Organic patch sound | Soft patch sound |
-|---|---|---|---|---|---|
-| `appStart` | notification / info | **TBD** | **TBD** | **TBD** | **TBD** |
-| `agentStart` | send / info | **TBD** | **TBD** | **TBD** | **TBD** |
-| `toolError` | error | **TBD** | **TBD** | **TBD** | **TBD** |
-| `agentAborted` | warning / undo | **TBD** | **TBD** | **TBD** | **TBD** |
-| `agentSettled` | notification / success | **TBD** | **TBD** | **TBD** | **TBD** |
-| `settingsRootEnter` | page-enter | **TBD** | **TBD** | **TBD** | **TBD** |
-| `settingsRootExit` | page-exit | **TBD** | **TBD** | **TBD** | **TBD** |
-| `settingsSubmenuEnter` | expand | **TBD** | **TBD** | **TBD** | **TBD** |
-| `settingsSubmenuExit` | collapse | **TBD** | **TBD** | **TBD** | **TBD** |
-| `settingsNavigate` | hover / tap | **TBD** | **TBD** | **TBD** | **TBD** |
-| `settingsToggleOn` | toggle-on | **TBD** | **TBD** | **TBD** | **TBD** |
-| `settingsToggleOff` | toggle-off | **TBD** | **TBD** | **TBD** | **TBD** |
-| `settingsOptionSelect` | select | **TBD** | **TBD** | **TBD** | **TBD** |
-| `settingsThemePreview` | notification | **TBD** | **TBD** | **TBD** | **TBD** |
+| Logical event | Core patch sound | Retro patch sound | Organic patch sound | Soft patch sound |
+|---|---|---|---|---|
+| `appStart` | **"success"** | **"success"** | **"success"** | **"success"** |
+| `agentStart` | **"copy"** | **"copy"** | **"copy"** | **"copy"** |
+| `toolError` | **"delete"** | **"error"** | **"error"** | **"error"** |
+| `agentAborted` | **"warning"** | **"warning"** | **"warning"** | **"warning"** |
+| `agentSettled` | **"notification"** | **"notification"** | **"notification"** | **"notification"** |
+| `settingsRootEnter` | **"modal-open"** | **"page-enter"** | **"page-enter"** | **"page-enter"** |
+| `settingsRootExit` | **"modal-close"** | **"page-exit"** | **"page-exit"** | **"delete"** |
+| `settingsSubmenuEnter` | **"dropdown-open"** | **"expand"** | **"expand"** | **"tab-switch"** |
+| `settingsSubmenuExit` | **"dropdown-close"** | **"collapse"** | **"collapse"** | **"undo"** |
+| `settingsNavigate` | **"deselect"** | **"deselect"** | **"deselect"** | **"hover"** |
+| `settingsOptionSelect` | **"select"** | **"select"** | **"select"** | **"select"** |
+| `settingsToggleOn` | **"toggle-on"** | **"toggle-on"** | **"toggle-on"** | **"toggle-on"** |
+| `settingsToggleOff` | **"toggle-off"** | **"toggle-off"** | **"toggle-off"** | **"toggle-off"** |
+| `settingsThemePreview` | **"notification"** | **"notification"** | **"notification"** | **"notification"** |
 
 Build validation must verify every table value against the pinned patch source and verify the matching generated WAV exists in the published asset directory.
 
@@ -364,7 +369,7 @@ Please review and approve or edit the following before implementation begins:
 1. **Section 7.2:** Fill in the Core, Retro, Organic, and Soft patch-sound mappings for every event.
 2. **Tool-error policy:** Confirm that a one-second debounce means the first error cue plays and subsequent tool errors in that window are coalesced into that one cue, rather than each producing a later queued cue.
 3. **Package identity:** Confirm the public npm package name/scope and repository/license metadata.
-4. **Configuration file:** Confirm `<agentDir>/pi-extension-sfx.json` (normally `~/.pi/agent/pi-extension-sfx.json`).
+4. **Configuration file:** Confirm `<agentDir>/pi-audio-feedback.json` (normally `~/.pi/agent/pi-audio-feedback.json`).
 5. **Platform contract:** Confirm the supported macOS/native Windows/Ubuntu-Debian matrix and WSL exclusion.
 6. **Settings behavior:** Confirm `/audio:config`, the four root options, theme-preview self-test, and mute/re-enable behavior.
 7. **Event scope:** Confirm shutdown, generic UI errors, skills, extension commands, and subagent cues remain out of scope for MVP.
