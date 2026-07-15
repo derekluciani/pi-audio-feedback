@@ -3,4 +3,8 @@ scripts
 .gitignore
 .gitattributes
 .git
+.pi
+.web-kits
 _ignore
+AGENTS.md
+Coding_Best_Practices.md
