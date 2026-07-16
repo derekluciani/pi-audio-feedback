@@ -1,7 +1,7 @@
 ---
 name: code-reviewer
 description: A code-reviewing subagent
-tools: read, grep, find, ls, bash, write
+tools: read, write, grep, find, ls, bash
 model: gpt-5.6 (sol)
 thinkingLevel: medium
 ---
