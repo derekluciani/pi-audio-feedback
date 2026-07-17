@@ -12,3 +12,6 @@ export default function audioFeedbackExtension(pi: ExtensionAPI): void {
     await configuration.load();
   });
 }
+
+export * from "./audio-catalog.js";
+export * from "./eligibility.js";
