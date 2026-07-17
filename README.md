@@ -35,6 +35,21 @@ Run the following command from an idle local Pi TUI:
 The settings interface controls event cues and the active built-in audio theme. Invoking the command
 outside TUI mode does not open an interface or play audio.
 
+## Release audibility checklist (`human-gate`)
+
+Automated adapter tests verify process selection, arguments, failure handling, and output isolation;
+they do not establish audibility. Before release, a human tester records whether they heard the
+Settings theme preview and lifecycle cue on required platforms:
+
+- macOS 14+ Apple Silicon: preview and lifecycle cue
+- Ubuntu 22.04+ x64 with PipeWire/PulseAudio: preview
+- Windows 11 x64 with Windows PowerShell 5.1: preview and lifecycle cue
+- Ubuntu ALSA-only fixture: preview when available
+- macOS 14+ Intel: best effort when available (not release-blocking)
+
+WSL is explicitly unsupported. These rows remain a `human-gate`; automated agents must not claim
+that a cue was heard.
+
 ## License and notices
 
 Package code, generated WAV files, and package documentation are licensed under the MIT License. See

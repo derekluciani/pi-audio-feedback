@@ -18,4 +18,6 @@ export * from "./eligibility.js";
 
 export * from "./scheduler.js";
 
+export * from "./platform-adapters.js";
+
 export * from "./terminal-outcomes.js";
