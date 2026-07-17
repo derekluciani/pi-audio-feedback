@@ -139,13 +139,40 @@ describe("published package", () => {
       `,
       "utf8",
     );
+    const suppliedTuiDirectory = join(directory, "node_modules", "@earendil-works", "pi-tui");
+    await mkdir(suppliedTuiDirectory, { recursive: true });
+    await writeFile(
+      join(suppliedTuiDirectory, "package.json"),
+      JSON.stringify({
+        name: "@earendil-works/pi-tui",
+        type: "module",
+        exports: { ".": "./index.js" },
+      }),
+      "utf8",
+    );
+    await writeFile(
+      join(suppliedTuiDirectory, "index.js"),
+      `
+        export const Key = { home: "home", end: "end", space: "space" };
+        export const matchesKey = () => false;
+        export const truncateToWidth = (text) => text;
+      `,
+      "utf8",
+    );
     const runnerPath = join(directory, "load-installed-extension.mjs");
     await writeFile(
       runnerPath,
       `
         import audioFeedbackExtension from "pi-audio-feedback";
         const registrations = [];
-        audioFeedbackExtension({ on: (event, handler) => registrations.push({ event, handler }) });
+        const commands = [];
+        audioFeedbackExtension({
+          on: (event, handler) => registrations.push({ event, handler }),
+          registerCommand: (name, command) => commands.push({ name, command }),
+        });
+        if (commands.length !== 1 || commands[0].name !== "audio:config") {
+          throw new TypeError("Installed extension did not synchronously register /audio:config");
+        }
         if (globalThis.__PI_PUBLIC_GET_AGENT_DIR_CALLS__ !== 1) {
           throw new TypeError("Installed extension did not use the supplied public Pi API");
         }
