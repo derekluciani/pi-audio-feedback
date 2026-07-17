@@ -52,6 +52,8 @@ export interface LaunchableAudioCue {
   readonly priority: number;
   readonly theme: AudioTheme;
   readonly wavPath: string;
+  /** Optional trusted metadata; the scheduler validates it before arming a watchdog. */
+  readonly wavDurationMs?: number;
   /** Present only for the native-Windows adapter. */
   readonly powershellHelperPath?: string;
 }
@@ -104,6 +106,13 @@ export interface AcceptedSettingsToggleOffRequest {
 }
 
 const authenticAcceptedRequests = new WeakSet();
+
+/** Check the module-private runtime proof without exposing a forgeable snapshot flag. */
+export function isAcceptedSettingsToggleOffRequest(
+  value: unknown,
+): value is AcceptedSettingsToggleOffRequest {
+  return typeof value === "object" && value !== null && authenticAcceptedRequests.has(value);
+}
 
 interface ParsedRequest {
   readonly event: AudioEvent;
@@ -180,7 +189,7 @@ export function acceptSettingsToggleOffRequest(
 function parseRequest(request: unknown): ParsedRequest | IneligibilityReason {
   if (!isRecord(request)) return "invalid-request";
 
-  if (authenticAcceptedRequests.has(request)) {
+  if (isAcceptedSettingsToggleOffRequest(request)) {
     return { event: "settingsToggleOff", togglePolicy: "accepted", themeOverride: null };
   }
 
