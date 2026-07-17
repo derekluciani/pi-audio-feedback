@@ -323,10 +323,22 @@ describe("audio Settings semantic state machine", () => {
     await disabling.state.confirm();
     disabling.requests.splice(0);
     disabling.store.failNext = true;
-    await disabling.state.confirm();
-    expect(disabling.requests.map(({ event }) => event)).toEqual(["settingsToggleOff"]);
-    expect(disabling.store.current.configuration.events.appStart).toBe(true);
-    expect(disabling.notifyFailure).toHaveBeenCalledOnce();
+    const stdout = vi.spyOn(process.stdout, "write");
+    const stderr = vi.spyOn(process.stderr, "write");
+    const consoleError = vi.spyOn(console, "error");
+    try {
+      await expect(disabling.state.confirm()).resolves.toBeUndefined();
+      expect(disabling.requests.map(({ event }) => event)).toEqual(["settingsToggleOff"]);
+      expect(disabling.store.current.configuration.events.appStart).toBe(true);
+      expect(disabling.notifyFailure).toHaveBeenCalledOnce();
+      expect(stdout).not.toHaveBeenCalled();
+      expect(stderr).not.toHaveBeenCalled();
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+      consoleError.mockRestore();
+    }
   });
 
   it("previews only the unsaved candidate and confirms under the newly saved theme", async () => {

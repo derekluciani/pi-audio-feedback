@@ -9,6 +9,33 @@ type PackFile = { path: string };
 type PackResult = { filename: string; files: PackFile[] };
 
 const temporaryDirectories: string[] = [];
+const REQUIRED_EXTENSION_FILES = [
+  "extensions/audio-catalog.ts",
+  "extensions/config.ts",
+  "extensions/eligibility.ts",
+  "extensions/index.ts",
+  "extensions/platform-adapters.ts",
+  "extensions/scheduler.ts",
+  "extensions/settings.ts",
+  "extensions/terminal-outcomes.ts",
+] as const;
+const REQUIRED_PACKAGE_METADATA = [
+  "LICENSE",
+  "README.md",
+  "THIRD_PARTY_NOTICES.md",
+  "package.json",
+  "scripts/play-wav.ps1",
+] as const;
+const FORBIDDEN_PACKAGE_PREFIXES = [
+  ".github/",
+  ".pi/",
+  ".web-kits/",
+  "_ignore/",
+  "assets/patches/",
+  "docs/",
+  "scripts/assets/",
+  "tests/",
+] as const;
 
 function parsePackResult(output: string): PackResult {
   const value: unknown = JSON.parse(output);
@@ -41,60 +68,71 @@ function parsePackResult(output: string): PackResult {
   return { filename, files: validatedFiles };
 }
 
+function parseWavManifest(source: string): string[] {
+  const value: unknown = JSON.parse(source);
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("files" in value) ||
+    typeof value.files !== "object" ||
+    value.files === null ||
+    Array.isArray(value.files)
+  ) {
+    throw new TypeError("WAV manifest must contain a files object");
+  }
+  return Object.keys(value.files);
+}
+
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true })));
 });
 
 describe("published package", () => {
-  it("contains only runtime material and installs without development dependencies", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pi-audio-feedback-"));
-    temporaryDirectories.push(directory);
+  it("has an exact runtime snapshot and loads from a production-only unusual path", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-audio-feedback-"));
+    temporaryDirectories.push(root);
+    const directory = join(root, "production install with spaces 日本語");
+    await mkdir(directory, { recursive: true });
 
     const output = execFileSync("npm", ["pack", "--json", "--pack-destination", directory], {
       encoding: "utf8",
     });
     const packed = parsePackResult(output);
-    const paths = packed.files.map((file) => file.path);
-
-    expect(paths).toEqual(
-      expect.arrayContaining([
-        "LICENSE",
-        "README.md",
-        "THIRD_PARTY_NOTICES.md",
-        "extensions/index.ts",
-        "package.json",
-        "scripts/play-wav.ps1",
-      ]),
-    );
+    const paths = packed.files.map((file) => file.path).sort();
     const wavManifestSource = await readFile(
       new URL("../assets/wav/manifest.json", import.meta.url),
       "utf8",
     );
-    const wavManifest: unknown = JSON.parse(wavManifestSource);
-    if (
-      typeof wavManifest !== "object" ||
-      wavManifest === null ||
-      !("files" in wavManifest) ||
-      typeof wavManifest.files !== "object" ||
-      wavManifest.files === null
-    ) {
-      throw new TypeError("WAV manifest must contain a files object");
+    const wavFiles = parseWavManifest(wavManifestSource);
+    const expectedPaths = [
+      ...REQUIRED_PACKAGE_METADATA,
+      ...REQUIRED_EXTENSION_FILES,
+      "assets/wav/manifest.json",
+      ...wavFiles,
+    ].sort();
+
+    expect(paths).toEqual(expectedPaths);
+    for (const prefix of FORBIDDEN_PACKAGE_PREFIXES) {
+      expect(
+        paths.some((path) => path.startsWith(prefix)),
+        prefix,
+      ).toBe(false);
     }
-    expect(paths).toEqual(
-      expect.arrayContaining(["assets/wav/manifest.json", ...Object.keys(wavManifest.files)]),
+    expect(
+      paths.some((path) => /(?:^|\/)(?:[^/]+\.)?(?:test|spec)\.[cm]?[jt]sx?$/.test(path)),
+    ).toBe(false);
+
+    await writeFile(
+      join(directory, "package.json"),
+      JSON.stringify({ name: "production-fixture", private: true }),
+      "utf8",
     );
-
-    expect(paths.some((path) => path.startsWith(".web-kits/"))).toBe(false);
-    expect(paths.some((path) => path.startsWith("assets/patches/"))).toBe(false);
-    expect(paths.some((path) => path.startsWith("tests/"))).toBe(false);
-    expect(paths.some((path) => path.startsWith("scripts/assets/"))).toBe(false);
-
-    execFileSync("npm", ["init", "--yes"], { cwd: directory, stdio: "ignore" });
     execFileSync(
       "npm",
       [
         "install",
         "--omit=dev",
+        "--omit=peer",
         "--ignore-scripts",
         "--legacy-peer-deps",
         join(directory, packed.filename),
@@ -108,8 +146,8 @@ describe("published package", () => {
     );
     expect(installedManifest).toContain('"name": "pi-audio-feedback"');
 
-    // Pi 0.80.6 itself requires Node 22, so its full loader cannot execute on Node 20.
-    // This root-only package mirrors Pi's public peer-module boundary and rejects private subpaths.
+    // Pi supplies these public peers. Root-only aliases model that loader boundary and reject
+    // accidental use of private Pi/TUI subpaths from the assembled production package.
     const suppliedPiDirectory = join(
       directory,
       "node_modules",
@@ -159,7 +197,7 @@ describe("published package", () => {
       `,
       "utf8",
     );
-    const runnerPath = join(directory, "load-installed-extension.mjs");
+    const runnerPath = join(directory, "load installed extension 日本語.mjs");
     await writeFile(
       runnerPath,
       `
@@ -190,7 +228,7 @@ describe("published package", () => {
     const tsxCli = join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
     execFileSync(process.execPath, [tsxCli, runnerPath], {
       cwd: directory,
-      env: { ...process.env, PI_TEST_AGENT_DIR: join(directory, "agent") },
+      env: { ...process.env, PI_TEST_AGENT_DIR: join(directory, "agent data 日本語") },
       stdio: "pipe",
     });
   });

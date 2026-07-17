@@ -27,7 +27,10 @@ jobs:
       - run: npm run format:check
       - run: npm run typecheck
       - run: npm test
+      - run: npm run test:acceptance
+      - run: npm run assets:verify
       - run: npm pack --dry-run --json
+      - run: npm audit --omit=dev --audit-level=high
 
   assets:
     name: Deterministic assets (Ubuntu 24.04, Node 22.23.1)

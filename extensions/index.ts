@@ -7,7 +7,7 @@ import {
 import { release } from "node:os";
 
 import type { AudioEvent, AudioTheme } from "./audio-catalog.js";
-import { ConfigurationStore } from "./config.js";
+import { ConfigurationStore, type ConfigurationFileSystem } from "./config.js";
 import {
   acceptSettingsToggleOffRequest,
   resolveAudioEligibility,
@@ -44,6 +44,8 @@ export interface AudioFeedbackRuntimeOptions {
   readonly clock?: SchedulerClock;
   readonly timers?: SchedulerTimers;
   readonly launchPlayer?: PlayerLauncher;
+  /** Injectable persistence boundary used by deterministic host integration tests. */
+  readonly configurationFileSystem?: ConfigurationFileSystem;
 }
 
 const systemClock: SchedulerClock = { now: Date.now };
@@ -355,7 +357,12 @@ export function registerAudioFeedbackExtension(
     runtime = null;
     configuration = null;
 
-    const nextConfiguration = new ConfigurationStore({ agentDirectory });
+    const nextConfiguration = new ConfigurationStore({
+      agentDirectory,
+      ...(options.configurationFileSystem === undefined
+        ? {}
+        : { fileSystem: options.configurationFileSystem }),
+    });
     try {
       await nextConfiguration.load();
       if (generation !== sessionGeneration) return;
