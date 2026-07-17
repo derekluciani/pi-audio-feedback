@@ -237,11 +237,71 @@ function applyFinalFade(buffer: AudioBuffer): void {
   buffer.copyToChannel(samples, 0);
 }
 
+function encodePcm16Wav(buffer: AudioBuffer, context: string): Uint8Array {
+  const bytesPerSample = EXPECTED_RENDERER.pcmBitDepth / 8;
+  const blockAlign = buffer.numberOfChannels * bytesPerSample;
+  const dataSize = buffer.length * blockAlign;
+  const bytes = new Uint8Array(44 + dataSize);
+  const view = new DataView(bytes.buffer);
+  const writeAscii = (offset: number, value: string): void => {
+    for (let index = 0; index < value.length; index += 1) {
+      view.setUint8(offset + index, value.charCodeAt(index));
+    }
+  };
+
+  writeAscii(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  writeAscii(8, "WAVE");
+  writeAscii(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, buffer.numberOfChannels, true);
+  view.setUint32(24, buffer.sampleRate, true);
+  view.setUint32(28, buffer.sampleRate * blockAlign, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, EXPECTED_RENDERER.pcmBitDepth, true);
+  writeAscii(36, "data");
+  view.setUint32(40, dataSize, true);
+
+  const channels = Array.from({ length: buffer.numberOfChannels }, (_, channel) =>
+    buffer.getChannelData(channel),
+  );
+  let offset = 44;
+  for (let frame = 0; frame < buffer.length; frame += 1) {
+    for (let channel = 0; channel < channels.length; channel += 1) {
+      const sample = channels[channel]?.[frame];
+      if (sample === undefined || !Number.isFinite(sample) || sample < -1 || sample > 1) {
+        throw new RangeError(
+          `Rendered sample is outside signed-16 PCM range: ${context} frame=${frame} channel=${channel} value=${String(sample)}`,
+        );
+      }
+      const pcmSample = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+      view.setInt16(offset, pcmSample, true);
+      offset += bytesPerSample;
+    }
+  }
+  return bytes;
+}
+
+function assertRepresentableSamples(buffer: AudioBuffer, context: string): void {
+  for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+    const samples = buffer.getChannelData(channel);
+    for (let frame = 0; frame < samples.length; frame += 1) {
+      const sample = samples[frame];
+      if (sample === undefined || !Number.isFinite(sample) || sample < -1 || sample > 1) {
+        throw new RangeError(
+          `Rendered sample is outside signed-16 PCM range: ${context} frame=${frame} channel=${channel} value=${String(sample)}`,
+        );
+      }
+    }
+  }
+}
+
 async function renderAssets(): Promise<GeneratedAsset[]> {
   const patches = await readPatches();
   const sounds = mappedSounds(patches);
   await installWebAudioGlobals();
-  const { bufferToWav, renderToBuffer } = await import("@web-kits/audio");
+  const { renderToBuffer } = await import("@web-kits/audio");
   const assets: GeneratedAsset[] = [];
 
   for (const theme of THEMES) {
@@ -260,10 +320,12 @@ async function renderAssets(): Promise<GeneratedAsset[]> {
       } finally {
         Math.random = originalRandom;
       }
+      const context = `theme=${theme} patch-name=${patchName}`;
+      assertRepresentableSamples(buffer, context);
       applyFinalFade(buffer);
       assets.push({
         path: `assets/wav/${theme}/${patchName}.wav`,
-        bytes: new Uint8Array(await bufferToWav(buffer).arrayBuffer()),
+        bytes: encodePcm16Wav(buffer, context),
       });
     }
   }
