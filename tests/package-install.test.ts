@@ -108,6 +108,8 @@ describe("published package", () => {
     );
     expect(installedManifest).toContain('"name": "pi-audio-feedback"');
 
+    // Pi 0.80.6 itself requires Node 22, so its full loader cannot execute on Node 20.
+    // This root-only package mirrors Pi's public peer-module boundary and rejects private subpaths.
     const suppliedPiDirectory = join(
       directory,
       "node_modules",
@@ -120,13 +122,21 @@ describe("published package", () => {
       JSON.stringify({
         name: "@earendil-works/pi-coding-agent",
         type: "module",
-        exports: "./index.js",
+        exports: { ".": "./index.js" },
       }),
       "utf8",
     );
     await writeFile(
       join(suppliedPiDirectory, "index.js"),
-      "export const getAgentDir = () => process.env.PI_TEST_AGENT_DIR;\n",
+      `
+        export const getAgentDir = () => {
+          globalThis.__PI_PUBLIC_GET_AGENT_DIR_CALLS__ =
+            (globalThis.__PI_PUBLIC_GET_AGENT_DIR_CALLS__ ?? 0) + 1;
+          const directory = process.env.PI_TEST_AGENT_DIR;
+          if (directory === undefined) throw new TypeError("Missing supplied agent directory");
+          return directory;
+        };
+      `,
       "utf8",
     );
     const runnerPath = join(directory, "load-installed-extension.mjs");
@@ -136,10 +146,17 @@ describe("published package", () => {
         import audioFeedbackExtension from "pi-audio-feedback";
         const registrations = [];
         audioFeedbackExtension({ on: (event, handler) => registrations.push({ event, handler }) });
-        if (registrations.length !== 1 || registrations[0].event !== "session_start") {
-          throw new TypeError("Installed extension did not register session_start");
+        if (globalThis.__PI_PUBLIC_GET_AGENT_DIR_CALLS__ !== 1) {
+          throw new TypeError("Installed extension did not use the supplied public Pi API");
         }
-        await registrations[0].handler({ reason: "startup" }, {});
+        const events = registrations.map(({ event }) => event);
+        const expected = [
+          "session_start", "agent_start", "tool_execution_end",
+          "agent_end", "agent_settled", "session_shutdown",
+        ];
+        if (JSON.stringify(events) !== JSON.stringify(expected)) {
+          throw new TypeError("Installed extension did not register lifecycle hooks");
+        }
       `,
       "utf8",
     );
