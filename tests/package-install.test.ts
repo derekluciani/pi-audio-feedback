@@ -1,0 +1,92 @@
+import { execFileSync } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, it } from "vitest";
+
+type PackFile = { path: string };
+type PackResult = { filename: string; files: PackFile[] };
+
+const temporaryDirectories: string[] = [];
+
+function parsePackResult(output: string): PackResult {
+  const value: unknown = JSON.parse(output);
+  if (!Array.isArray(value) || value.length !== 1) {
+    throw new TypeError("npm pack must return one package result");
+  }
+
+  const result: unknown = value[0];
+  if (typeof result !== "object" || result === null) {
+    throw new TypeError("npm pack result must be an object");
+  }
+
+  const filename = "filename" in result ? result.filename : undefined;
+  const files = "files" in result ? result.files : undefined;
+  if (typeof filename !== "string" || !Array.isArray(files)) {
+    throw new TypeError("npm pack result is missing filename or files");
+  }
+
+  const validatedFiles = files.map((file: unknown): PackFile => {
+    if (typeof file !== "object" || file === null) {
+      throw new TypeError("npm pack file entry must be an object");
+    }
+    const path = "path" in file ? file.path : undefined;
+    if (typeof path !== "string") {
+      throw new TypeError("npm pack file entry must have a path");
+    }
+    return { path };
+  });
+
+  return { filename, files: validatedFiles };
+}
+
+afterEach(async () => {
+  await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true })));
+});
+
+describe("published package", () => {
+  it("contains only runtime material and installs without development dependencies", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-audio-feedback-"));
+    temporaryDirectories.push(directory);
+
+    const output = execFileSync("npm", ["pack", "--json", "--pack-destination", directory], {
+      encoding: "utf8",
+    });
+    const packed = parsePackResult(output);
+    const paths = packed.files.map((file) => file.path);
+
+    expect(paths).toEqual(
+      expect.arrayContaining([
+        "LICENSE",
+        "README.md",
+        "THIRD_PARTY_NOTICES.md",
+        "extensions/index.ts",
+        "package.json",
+        "scripts/play-wav.ps1",
+      ]),
+    );
+    expect(paths.some((path) => path.startsWith(".web-kits/"))).toBe(false);
+    expect(paths.some((path) => path.startsWith("assets/patches/"))).toBe(false);
+    expect(paths.some((path) => path.startsWith("tests/"))).toBe(false);
+
+    execFileSync("npm", ["init", "--yes"], { cwd: directory, stdio: "ignore" });
+    execFileSync(
+      "npm",
+      [
+        "install",
+        "--omit=dev",
+        "--ignore-scripts",
+        "--legacy-peer-deps",
+        join(directory, packed.filename),
+      ],
+      { cwd: directory, stdio: "ignore" },
+    );
+
+    const installedManifest = await readFile(
+      join(directory, "node_modules", "pi-audio-feedback", "package.json"),
+      "utf8",
+    );
+    expect(installedManifest).toContain('"name": "pi-audio-feedback"');
+  });
+});

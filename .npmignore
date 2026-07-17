@@ -1,10 +1,26 @@
-src
-scripts
-.gitignore
-.gitattributes
-.git
-.pi
-.web-kits
-_ignore
+# Runtime package allowlist (also enforced by package.json#files).
+*
+!extensions/
+!extensions/**
+!assets/
+!assets/wav/
+!assets/wav/**
+!scripts/
+!scripts/play-wav.ps1
+!LICENSE
+!THIRD_PARTY_NOTICES.md
+!README.md
+!package.json
+
+# Explicit source/development exclusions.
+.web-kits/
+assets/patches/
+tests/
+.pi/
+_ignore/
 AGENTS.md
 Coding_Best_Practices.md
+PRD_Audio_Feedback_Implementation.md
+tsconfig.json
+*.config.js
+*.config.ts
