@@ -1,4 +1,8 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  ExtensionCommandContext,
+} from "@earendil-works/pi-coding-agent";
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,6 +16,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 import type { AudioEvent, AudioTheme } from "../extensions/audio-catalog.js";
 import type { LaunchableAudioCue } from "../extensions/eligibility.js";
 import type { SchedulerChild } from "../extensions/scheduler.js";
+import { THEME_SELECTOR_HELPER } from "../extensions/settings.js";
 
 const { LITERAL_ESCAPE_SEQUENCE, registerAudioFeedbackExtension } =
   await import("../extensions/index.js");
@@ -21,9 +26,20 @@ class FakeChild extends EventEmitter implements SchedulerChild {
 }
 
 type Hook = (event: unknown, context: ExtensionContext) => unknown;
+type CommandHandler = (args: string, context: ExtensionCommandContext) => unknown;
+
+interface TestComponent {
+  render(width: number): string[];
+  handleInput?(data: string): void;
+}
 
 interface ExtensionHarness {
   readonly hooks: Map<string, Hook>;
+  readonly commands: Map<string, CommandHandler>;
+  readonly customComponents: TestComponent[];
+  readonly notifications: Array<{ message: string; type: string | undefined }>;
+  readonly overlayFocus: ReturnType<typeof vi.fn>;
+  setIdle(value: boolean): void;
   readonly starts: Array<{ event: AudioEvent; theme: AudioTheme }>;
   readonly children: FakeChild[];
   readonly terminalListeners: Array<(data: string) => unknown>;
@@ -34,6 +50,11 @@ interface ExtensionHarness {
 
 function createHarness(agentDirectory: string, mode: "tui" | "rpc" = "tui"): ExtensionHarness {
   const hooks = new Map<string, Hook>();
+  const commands = new Map<string, CommandHandler>();
+  const customComponents: TestComponent[] = [];
+  const notifications: Array<{ message: string; type: string | undefined }> = [];
+  const overlayFocus = vi.fn();
+  let idle = true;
   const starts: Array<{ event: AudioEvent; theme: AudioTheme }> = [];
   const children: FakeChild[] = [];
   const terminalListeners: Array<(data: string) => unknown> = [];
@@ -42,17 +63,57 @@ function createHarness(agentDirectory: string, mode: "tui" | "rpc" = "tui"): Ext
   let nextTimer = 0;
 
   const on = vi.fn((name: string, hook: Hook) => hooks.set(name, hook));
-  const pi = { on } as unknown as ExtensionAPI;
+  const registerCommand = vi.fn((name: string, command: { handler: CommandHandler }) =>
+    commands.set(name, command.handler),
+  );
+  const pi = { on, registerCommand } as unknown as ExtensionAPI;
   const ui = {
     onTerminalInput: vi.fn((listener: (data: string) => unknown) => {
       terminalListeners.push(listener);
       return removeTerminalListener;
     }),
+    notify: vi.fn((message: string, type?: string) => notifications.push({ message, type })),
+    custom: vi.fn(
+      <T>(
+        factory: (
+          tui: { requestRender(): void },
+          theme: {
+            fg(_color: string, text: string): string;
+            bold(text: string): string;
+          },
+          keybindings: { matches(data: string, binding: string): boolean },
+          done: (value: T) => void,
+        ) => TestComponent,
+        options: { onHandle?: (handle: { focus(): void }) => void },
+      ): Promise<T> =>
+        new Promise<T>((resolve) => {
+          const component = factory(
+            { requestRender: vi.fn() },
+            { fg: (_color, text) => text, bold: (text) => text },
+            {
+              matches: (data, binding) => {
+                const controls: Record<string, string[]> = {
+                  "tui.select.up": ["up"],
+                  "tui.select.down": ["down"],
+                  "tui.select.pageUp": ["pageUp"],
+                  "tui.select.pageDown": ["pageDown"],
+                  "tui.select.confirm": ["enter"],
+                  "tui.select.cancel": ["escape", "ctrl+c"],
+                };
+                return controls[binding]?.includes(data) ?? false;
+              },
+            },
+            resolve,
+          );
+          customComponents.push(component);
+          options.onHandle?.({ focus: overlayFocus });
+        }),
+    ),
   };
   const context = {
     mode,
     ui,
-    isIdle: () => true,
+    isIdle: () => idle,
   } as unknown as ExtensionContext;
 
   registerAudioFeedbackExtension(pi, {
@@ -79,6 +140,13 @@ function createHarness(agentDirectory: string, mode: "tui" | "rpc" = "tui"): Ext
 
   return {
     hooks,
+    commands,
+    customComponents,
+    notifications,
+    overlayFocus,
+    setIdle: (value) => {
+      idle = value;
+    },
     starts,
     children,
     terminalListeners,
@@ -100,6 +168,12 @@ function invoke(
   event: Readonly<Record<string, unknown>>,
 ): Promise<unknown> {
   return Promise.resolve(getHook(harness, name)(event, harness.context));
+}
+
+function invokeCommand(harness: ExtensionHarness): Promise<unknown> {
+  const command = harness.commands.get("audio:config");
+  if (command === undefined) throw new Error("Missing audio:config command");
+  return Promise.resolve(command("", harness.context as unknown as ExtensionCommandContext));
 }
 
 async function flush(): Promise<void> {
@@ -289,6 +363,84 @@ describe("Pi lifecycle integration", () => {
     const rpcHarness = createHarness(directory, "rpc");
     await invoke(rpcHarness, "session_start", { type: "session_start", reason: "startup" });
     expect(rpcHarness.terminalListeners).toEqual([]);
+  });
+
+  it("registers /audio:config synchronously and gates non-TUI and active sessions", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "audio-extension-command-gate-"));
+    const rpcHarness = createHarness(directory, "rpc");
+    expect([...rpcHarness.commands.keys()]).toEqual(["audio:config"]);
+    await invokeCommand(rpcHarness);
+    expect(rpcHarness.customComponents).toEqual([]);
+    expect(rpcHarness.notifications).toEqual([]);
+
+    const tuiHarness = createHarness(directory);
+    await invokeCommand(tuiHarness); // before session_start
+    expect(tuiHarness.customComponents).toEqual([]);
+    await invoke(tuiHarness, "session_start", { type: "session_start", reason: "new" });
+    tuiHarness.setIdle(false);
+    await invokeCommand(tuiHarness);
+    expect(tuiHarness.notifications).toEqual([
+      { message: "Audio settings are available when Pi is idle.", type: "info" },
+    ]);
+    expect(tuiHarness.customComponents).toEqual([]);
+    expect(tuiHarness.starts).toEqual([]);
+  });
+
+  it("opens one usable component, focuses it on reinvocation, and closes one level at a time", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "audio-extension-command-singleton-"));
+    const harness = createHarness(directory);
+    await invoke(harness, "session_start", { type: "session_start", reason: "new" });
+
+    const firstCommand = invokeCommand(harness);
+    await invokeCommand(harness); // reinvoked while disk reload is still opening
+    await vi.waitFor(() => {
+      expect(harness.customComponents).toHaveLength(1);
+    });
+    expect(harness.starts.map(({ event }) => event)).toEqual(["settingsRootEnter"]);
+    expect(
+      harness.customComponents[0]?.render(80).some((line) => line.includes("Turn all sounds on")),
+    ).toBe(true);
+    await invokeCommand(harness);
+    expect(harness.customComponents).toHaveLength(1);
+    expect(harness.overlayFocus).toHaveBeenCalledOnce();
+
+    const component = harness.customComponents[0];
+    if (component?.handleInput === undefined) throw new Error("Expected interactive component");
+    component.handleInput("down");
+    component.handleInput("down");
+    component.handleInput("down");
+    component.handleInput("enter");
+    await flush();
+    await vi.waitFor(() => {
+      expect(component.render(80)).toContain(THEME_SELECTOR_HELPER);
+    });
+    component.handleInput("escape");
+    await flush();
+    expect(component.render(80).some((line) => line.includes("Turn all sounds on"))).toBe(true);
+    component.handleInput("ctrl+c");
+    await firstCommand;
+  });
+
+  it("reloads configuration on open and emits only one Settings warning", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "audio-extension-command-warning-"));
+    const harness = createHarness(directory);
+    await invoke(harness, "session_start", { type: "session_start", reason: "new" });
+    await writeFile(join(directory, "pi-audio-feedback.json"), "{ malformed");
+
+    const command = invokeCommand(harness);
+    await vi.waitFor(() => {
+      expect(harness.customComponents).toHaveLength(1);
+    });
+    expect(harness.notifications).toEqual([
+      {
+        message: "Audio settings found malformed configuration; using defaults.",
+        type: "warning",
+      },
+    ]);
+    await invokeCommand(harness);
+    expect(harness.notifications).toHaveLength(1);
+    harness.customComponents[0]?.handleInput?.("escape");
+    await command;
   });
 
   it("contains malformed-config, listener, and launch failures without output or rejection", async () => {

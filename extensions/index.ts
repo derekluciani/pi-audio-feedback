@@ -2,14 +2,26 @@ import {
   getAgentDir,
   type ExtensionAPI,
   type ExtensionContext,
+  type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { release } from "node:os";
 
-import type { AudioEvent } from "./audio-catalog.js";
+import type { AudioEvent, AudioTheme } from "./audio-catalog.js";
 import { ConfigurationStore } from "./config.js";
-import { resolveAudioEligibility } from "./eligibility.js";
+import {
+  acceptSettingsToggleOffRequest,
+  resolveAudioEligibility,
+  type AcceptedSettingsToggleOffRequest,
+} from "./eligibility.js";
 import { selectPlatformPlayer, type PlayerLauncher } from "./platform-adapters.js";
-import { AudioScheduler, type SchedulerClock, type SchedulerTimers } from "./scheduler.js";
+import {
+  AudioScheduler,
+  type PreviewFailure,
+  type SchedulerClock,
+  type SchedulerRequestResult,
+  type SchedulerTimers,
+} from "./scheduler.js";
+import { AudioSettingsComponent, SettingsStateMachine } from "./settings.js";
 import { TerminalOutcomeRequestAdapter } from "./terminal-outcomes.js";
 
 export * from "./config.js";
@@ -18,6 +30,7 @@ export * from "./eligibility.js";
 export * from "./scheduler.js";
 export * from "./platform-adapters.js";
 export * from "./terminal-outcomes.js";
+export * from "./settings.js";
 
 /** The exact raw terminal sequence for a literal physical Escape key. */
 export const LITERAL_ESCAPE_SEQUENCE = "\u001b";
@@ -53,6 +66,7 @@ class AudioSessionRuntime {
   readonly #terminalOutcomes: TerminalOutcomeRequestAdapter;
   #removeTerminalInputListener: (() => void) | null = null;
   #shutdown = false;
+  #previewFailureListener: ((failure: PreviewFailure) => void) | null = null;
 
   constructor(scheduler: AudioScheduler) {
     this.#scheduler = scheduler;
@@ -73,8 +87,29 @@ class AudioSessionRuntime {
     }
   }
 
-  request(event: AudioEvent): Promise<unknown> {
-    return this.#scheduler.request(event);
+  request(
+    event: AudioEvent,
+    options: { readonly themeOverride?: AudioTheme } = {},
+  ): Promise<SchedulerRequestResult> {
+    return this.#scheduler.request(event, options);
+  }
+
+  requestAcceptedToggleOff(
+    proof: AcceptedSettingsToggleOffRequest,
+  ): Promise<SchedulerRequestResult> {
+    return this.#scheduler.request(proof);
+  }
+
+  acceptToggleOff(configuration: ConfigurationStore): AcceptedSettingsToggleOffRequest | null {
+    return acceptSettingsToggleOffRequest(() => configuration.current.configuration);
+  }
+
+  setPreviewFailureListener(listener: ((failure: PreviewFailure) => void) | null): void {
+    this.#previewFailureListener = listener;
+  }
+
+  notifyPreviewFailure(failure: PreviewFailure): void {
+    this.#previewFailureListener?.(failure);
   }
 
   onAgentStart(): Promise<unknown> {
@@ -101,6 +136,7 @@ class AudioSessionRuntime {
         // Pi may already have removed its terminal listeners during teardown.
       }
     }
+    this.#previewFailureListener = null;
     this.#terminalOutcomes.shutdown();
     this.#scheduler.shutdown();
   }
@@ -113,6 +149,7 @@ function createSessionRuntime(
 ): AudioSessionRuntime {
   const platform = options.platform ?? process.platform;
   const launchPlayer = options.launchPlayer ?? selectPlatformPlayer(platform);
+  let runtime: AudioSessionRuntime | null = null;
   const scheduler = new AudioScheduler({
     clock: options.clock ?? systemClock,
     timers: options.timers ?? systemTimers,
@@ -127,33 +164,203 @@ function createSessionRuntime(
         moduleUrl: options.moduleUrl ?? import.meta.url,
       }),
     // Eligibility rejects unsupported platforms before this process boundary is reached.
+    onPreviewFailure: (failure) => runtime?.notifyPreviewFailure(failure),
     launchPlayer: (cue) => {
       if (launchPlayer === null) throw new Error("Unsupported audio platform");
       return launchPlayer(cue);
     },
   });
-  return new AudioSessionRuntime(scheduler);
+  runtime = new AudioSessionRuntime(scheduler);
+  return runtime;
 }
 
-/** Register Pi hooks while retaining exactly one runtime for the currently active session. */
+/** The currently visible Settings overlay and its session-bound controls. */
+interface LiveSettingsController {
+  readonly generation: number;
+  readonly state: SettingsStateMachine;
+  focus(): void;
+  dispose(): void;
+}
+
+function configurationWarningMessage(
+  warning: ConfigurationStore["current"]["warning"],
+): string | null {
+  if (warning === "malformed")
+    return "Audio settings found malformed configuration; using defaults.";
+  if (warning === "unsupported-version") {
+    return "Audio settings cannot change a configuration written by a newer version.";
+  }
+  if (warning === "symlink" || warning === "unreadable") {
+    return "Audio settings cannot read or safely change the configuration file.";
+  }
+  return null;
+}
+
+/** Register Pi hooks and the state-free command while retaining one active session runtime. */
 export function registerAudioFeedbackExtension(
   pi: ExtensionAPI,
   options: AudioFeedbackRuntimeOptions = {},
 ): void {
   const agentDirectory = options.agentDirectory ?? getAgentDir();
   let runtime: AudioSessionRuntime | null = null;
+  let configuration: ConfigurationStore | null = null;
+  let settings: LiveSettingsController | null = null;
+  let settingsPromise: Promise<void> | null = null;
   let sessionGeneration = 0;
+
+  const closeSettingsForTeardown = (): void => {
+    const current = settings;
+    settings = null;
+    current?.dispose();
+  };
+
+  const openSettings = async (ctx: ExtensionCommandContext): Promise<void> => {
+    if (ctx.mode !== "tui") return;
+    const currentRuntime = runtime;
+    const currentConfiguration = configuration;
+    if (currentRuntime === null || currentConfiguration === null) return;
+    if (!ctx.isIdle()) {
+      ctx.ui.notify("Audio settings are available when Pi is idle.", "info");
+      return;
+    }
+    if (settings !== null) {
+      settings.focus();
+      return;
+    }
+
+    const generation = sessionGeneration;
+    let openedController: LiveSettingsController | null = null;
+    try {
+      const loaded = await currentConfiguration.load();
+      if (
+        generation !== sessionGeneration ||
+        runtime !== currentRuntime ||
+        configuration !== currentConfiguration
+      ) {
+        return;
+      }
+      const warning = configurationWarningMessage(loaded.warning);
+      if (warning !== null) ctx.ui.notify(warning, "warning");
+
+      let finish: (() => void) | null = null;
+      let focusOverlay = (): void => undefined;
+      let requestRender = (): void => undefined;
+      const state = new SettingsStateMachine(
+        {
+          configuration: currentConfiguration,
+          audio: {
+            request: (event, requestOptions) => currentRuntime.request(event, requestOptions),
+            requestAcceptedToggleOff: (proof) => currentRuntime.requestAcceptedToggleOff(proof),
+            acceptToggleOff: () => currentRuntime.acceptToggleOff(currentConfiguration),
+          },
+          notifyFailure: () => {
+            ctx.ui.notify(
+              "Audio settings could not be saved; the previous value was restored.",
+              "error",
+            );
+          },
+          requestRender: () => {
+            requestRender();
+          },
+          close: () => {
+            finish?.();
+          },
+        },
+        loaded,
+      );
+      const controller: LiveSettingsController = {
+        generation,
+        state,
+        focus: () => {
+          focusOverlay();
+          requestRender();
+        },
+        dispose: () => {
+          state.dispose();
+        },
+      };
+      openedController = controller;
+      settings = controller;
+      currentRuntime.setPreviewFailureListener(() => {
+        if (settings === controller && state.level === "themes" && !state.isClosed) {
+          ctx.ui.notify("Audio theme preview could not be launched.", "warning");
+        }
+      });
+
+      await state.open();
+      if (settings !== controller || state.isClosed) return;
+      await ctx.ui.custom<undefined>(
+        (tui, theme, keybindings, done) => {
+          let finished = false;
+          finish = () => {
+            if (finished) return;
+            finished = true;
+            done(undefined);
+          };
+          requestRender = () => {
+            tui.requestRender();
+          };
+          return new AudioSettingsComponent({
+            state,
+            keybindings,
+            requestRender,
+            styleTitle: (text) => theme.fg("accent", theme.bold(text)),
+            styleSelected: (text) => theme.fg("accent", text),
+            styleMuted: (text) => theme.fg("dim", text),
+          });
+        },
+        {
+          overlay: true,
+          overlayOptions: { width: "70%", minWidth: 42, maxHeight: "90%" },
+          onHandle: (handle) => {
+            focusOverlay = () => {
+              handle.focus();
+            };
+          },
+        },
+      );
+    } catch {
+      // Expected load, UI, and feedback failures never reject into Pi or write output.
+    } finally {
+      if (openedController !== null && settings === openedController) {
+        settings = null;
+        currentRuntime.setPreviewFailureListener(null);
+      }
+    }
+  };
+
+  // Factory-time registration keeps the command present in TUI, RPC, JSON, and print modes.
+  pi.registerCommand("audio:config", {
+    description: "Configure audio feedback",
+    handler: async (_args, ctx) => {
+      if (settingsPromise !== null) {
+        settings?.focus();
+        return;
+      }
+      const operation = openSettings(ctx);
+      settingsPromise = operation;
+      try {
+        await operation;
+      } finally {
+        if (settingsPromise === operation) settingsPromise = null;
+      }
+    },
+  });
 
   pi.on("session_start", async (event, ctx) => {
     const generation = ++sessionGeneration;
+    settingsPromise = null;
+    closeSettingsForTeardown();
     runtime?.shutdown();
     runtime = null;
+    configuration = null;
 
-    const configuration = new ConfigurationStore({ agentDirectory });
+    const nextConfiguration = new ConfigurationStore({ agentDirectory });
     try {
-      await configuration.load();
+      await nextConfiguration.load();
       if (generation !== sessionGeneration) return;
-      const nextRuntime = createSessionRuntime(ctx, configuration, options);
+      const nextRuntime = createSessionRuntime(ctx, nextConfiguration, options);
+      configuration = nextConfiguration;
       runtime = nextRuntime;
       nextRuntime.installTerminalInputListener(ctx);
       if (event.reason === "startup") await nextRuntime.request("appStart");
@@ -184,8 +391,11 @@ export function registerAudioFeedbackExtension(
 
   pi.on("session_shutdown", () => {
     sessionGeneration += 1;
+    settingsPromise = null;
+    closeSettingsForTeardown();
     const current = runtime;
     runtime = null;
+    configuration = null;
     try {
       current?.shutdown();
     } catch {
@@ -194,7 +404,7 @@ export function registerAudioFeedbackExtension(
   });
 }
 
-/** Pi extension factory; issue #8 will add its state-free command registration here. */
+/** Pi extension factory registers all hooks and commands synchronously. */
 export default function audioFeedbackExtension(pi: ExtensionAPI): void {
   registerAudioFeedbackExtension(pi);
 }
