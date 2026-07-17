@@ -223,7 +223,7 @@ export class SettingsStateMachine {
 
   async #saveSelectedTheme(): Promise<void> {
     const theme = AUDIO_THEMES[this.selectedIndex];
-    if (theme === undefined || theme === this.#configuration.configuration.theme) return;
+    if (theme === undefined) return;
     const result = await this.#options.configuration.mutate({ theme });
     if (this.#closed) return;
     if (!result.ok) {

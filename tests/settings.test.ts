@@ -1,5 +1,8 @@
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it, vi } from "vitest";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   AUDIO_EVENTS,
@@ -9,6 +12,8 @@ import {
   type AudioTheme,
 } from "../extensions/audio-catalog.js";
 import {
+  CONFIG_FILE_NAME,
+  ConfigurationStore,
   DEFAULT_CONFIGURATION,
   type AudioFeedbackConfiguration,
   type ConfigurationMutation,
@@ -28,6 +33,14 @@ import {
   type SettingsAudioRequests,
   type SettingsConfigurationStore,
 } from "../extensions/settings.js";
+
+const temporaryDirectories: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true })),
+  );
+});
 
 function cloneConfiguration(configuration: AudioFeedbackConfiguration): AudioFeedbackConfiguration {
   return {
@@ -334,6 +347,78 @@ describe("audio Settings semantic state machine", () => {
     await harness.state.confirm();
     expect(harness.store.current.configuration.theme).toBe("retro");
     expect(harness.requests).toEqual([{ event: "settingsOptionSelect" }]);
+  });
+
+  it("persists and confirms Core when first-run Enter selects the default theme", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-audio-settings-theme-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "agent", CONFIG_FILE_NAME);
+    const store = new ConfigurationStore({ path });
+    const initial = await store.load();
+    expect(initial.classification).toBe("missing");
+
+    const requests: MachineHarness["requests"] = [];
+    const state = new SettingsStateMachine(
+      {
+        configuration: store,
+        audio: {
+          request: (event, options) => {
+            requests.push({
+              event,
+              ...(options?.themeOverride ? { themeOverride: options.themeOverride } : {}),
+            });
+            return Promise.resolve("accepted");
+          },
+          requestAcceptedToggleOff: () => Promise.resolve("accepted"),
+          acceptToggleOff: () => null,
+        },
+        notifyFailure: vi.fn(),
+        close: vi.fn(),
+        requestRender: vi.fn(),
+      },
+      initial,
+    );
+
+    await state.navigate("end");
+    await state.confirm();
+    requests.splice(0);
+    await state.confirm();
+
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual(DEFAULT_CONFIGURATION);
+    expect(store.current.configuration.theme).toBe("core");
+    expect(requests).toEqual([{ event: "settingsOptionSelect" }]);
+  });
+
+  it("writes and confirms an already persisted theme with exactly one selection cue", async () => {
+    const harness = createMachine(DEFAULT_CONFIGURATION);
+    await harness.state.navigate("end");
+    await harness.state.confirm();
+    harness.requests.splice(0);
+    harness.renders.mockClear();
+
+    await harness.state.confirm();
+
+    expect(harness.store.mutations).toEqual([{ theme: "core" }]);
+    expect(harness.store.current.configuration.theme).toBe("core");
+    expect(harness.state.configuration.configuration.theme).toBe("core");
+    expect(harness.requests).toEqual([{ event: "settingsOptionSelect" }]);
+    expect(harness.renders).toHaveBeenCalledOnce();
+  });
+
+  it("preserves same-theme state and emits no post-save cue when confirmation fails", async () => {
+    const harness = createMachine(DEFAULT_CONFIGURATION);
+    await harness.state.navigate("end");
+    await harness.state.confirm();
+    harness.requests.splice(0);
+    harness.store.failNext = true;
+
+    await harness.state.confirm();
+
+    expect(harness.store.mutations).toEqual([{ theme: "core" }]);
+    expect(harness.store.current.configuration.theme).toBe("core");
+    expect(harness.state.configuration.configuration.theme).toBe("core");
+    expect(harness.requests).toEqual([]);
+    expect(harness.notifyFailure).toHaveBeenCalledOnce();
   });
 
   it("preserves the confirmed theme on cancel and emits no post-save cue on failure", async () => {
