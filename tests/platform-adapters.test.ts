@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { LaunchableAudioCue } from "../extensions/eligibility.js";
 import { selectPlatformPlayer, type SpawnPlayer } from "../extensions/platform-adapters.js";
-import type { SchedulerChild } from "../extensions/scheduler.js";
+import { AudioScheduler, type SchedulerChild } from "../extensions/scheduler.js";
 
 class FakeChild extends EventEmitter implements SchedulerChild {
   readonly kill = vi.fn(() => true);
@@ -48,6 +48,27 @@ function childAt(children: FakeChild[], index: number): FakeChild {
   const child = children[index];
   if (child === undefined) throw new Error(`Missing child ${String(index)}`);
   return child;
+}
+
+async function flushLifecycle(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+function emitDuringRegistration(
+  child: FakeChild,
+  watchedEvent: "error" | "spawn" | "close",
+  emit: (listener: (...args: unknown[]) => void) => void,
+): void {
+  const registrationListener = (
+    event: string | symbol,
+    listener: (...args: unknown[]) => void,
+  ): void => {
+    if (event !== watchedEvent) return;
+    child.removeListener("newListener", registrationListener);
+    emit(listener);
+  };
+  child.on("newListener", registrationListener);
 }
 
 function expectCommonOptions(options: unknown, wavPath: string): void {
@@ -127,7 +148,7 @@ describe("platform adapter contracts", () => {
 });
 
 describe("Linux ENOENT-only fallback facade", () => {
-  it("falls back exactly once after asynchronous pre-spawn paplay ENOENT", () => {
+  it("falls back exactly once after asynchronous pre-spawn paplay ENOENT", async () => {
     const h = spawnHarness();
     const logical = selectPlatformPlayer("linux", h.spawnPlayer)?.(cue("/tmp/a b's 日本語.wav"));
     const events: string[] = [];
@@ -145,6 +166,7 @@ describe("Linux ENOENT-only fallback facade", () => {
 
     childAt(h.children, 1).emit("spawn");
     childAt(h.children, 1).emit("close", 0, null);
+    await flushLifecycle();
     expect(events).toEqual(["spawn", "close:0"]);
     expectCommonOptions(h.calls[1]?.options, "/tmp/a b's 日本語.wav");
   });
@@ -166,7 +188,7 @@ describe("Linux ENOENT-only fallback facade", () => {
     expect(nonEnoent).toHaveBeenCalledOnce();
   });
 
-  it.each(["EACCES", "EPERM"])("does not fallback for pre-spawn %s", (code) => {
+  it.each(["EACCES", "EPERM"])("does not fallback for pre-spawn %s", async (code) => {
     const h = spawnHarness();
     const logical = selectPlatformPlayer("linux", h.spawnPlayer)?.(cue("/tmp/cue.wav"));
     const errors: Error[] = [];
@@ -174,10 +196,11 @@ describe("Linux ENOENT-only fallback facade", () => {
     childAt(h.children, 0).emit("error", Object.assign(new Error(code), { code }));
     childAt(h.children, 0).emit("close", 1, null);
     expect(h.calls.map(({ executable }) => executable)).toEqual(["paplay"]);
+    await flushLifecycle();
     expect(errors).toHaveLength(1);
   });
 
-  it("never falls back after spawn, child error, or nonzero close and settles once", () => {
+  it("never falls back after spawn, child error, or nonzero close and settles once", async () => {
     for (const terminal of ["error", "close"] as const) {
       const h = spawnHarness();
       const logical = selectPlatformPlayer("linux", h.spawnPlayer)?.(cue("/tmp/cue.wav"));
@@ -190,6 +213,7 @@ describe("Linux ENOENT-only fallback facade", () => {
       else primary.emit("close", 17, null);
       primary.emit("close", 17, null);
       expect(h.calls.map(({ executable }) => executable)).toEqual(["paplay"]);
+      await flushLifecycle();
       expect(terminals).toEqual([terminal]);
     }
   });
@@ -204,5 +228,183 @@ describe("Linux ENOENT-only fallback facade", () => {
     expect(() => logical?.kill()).not.toThrow();
     expect(childAt(h.children, 0).kill).not.toHaveBeenCalled();
     expect(childAt(h.children, 1).kill).toHaveBeenCalledOnce();
+  });
+
+  it("defers synchronous registration lifecycle and removes every direct listener", async () => {
+    const direct = new FakeChild();
+    emitDuringRegistration(direct, "close", (listener) => {
+      listener(0, null);
+    });
+    const spawnPlayer = vi.fn<SpawnPlayer>(() => direct);
+    const logical = selectPlatformPlayer("linux", spawnPlayer)?.(cue("/tmp/cue.wav"));
+    const events: string[] = [];
+    logical?.on("spawn", () => events.push("spawn"));
+    logical?.on("close", () => events.push("close"));
+
+    expect(events).toEqual([]);
+    await flushLifecycle();
+    expect(events).toEqual(["close"]);
+    expect(direct.listenerCount("error")).toBe(0);
+    expect(direct.listenerCount("spawn")).toBe(0);
+    expect(direct.listenerCount("close")).toBe(0);
+  });
+
+  it("forwards at most one logical spawn and terminal under duplicate and late events", async () => {
+    const h = spawnHarness();
+    const logical = selectPlatformPlayer("linux", h.spawnPlayer)?.(cue("/tmp/cue.wav"));
+    const events: string[] = [];
+    logical?.on("spawn", () => events.push("spawn"));
+    logical?.on("error", () => events.push("error"));
+    logical?.on("close", () => events.push("close"));
+    const direct = childAt(h.children, 0);
+
+    const lateError = direct.listeners("error")[0];
+    direct.emit("spawn");
+    direct.emit("spawn");
+    direct.emit("close", 0, null);
+    lateError?.(new Error("late"));
+    direct.emit("close", 1, null);
+    await flushLifecycle();
+    direct.emit("spawn");
+    lateError?.(new Error("later"));
+    direct.emit("close", 2, null);
+    await flushLifecycle();
+
+    expect(events).toEqual(["spawn", "close"]);
+    expect(direct.listenerCount("error")).toBe(0);
+    expect(direct.listenerCount("spawn")).toBe(0);
+    expect(direct.listenerCount("close")).toBe(0);
+  });
+
+  it("handles synchronous primary ENOENT registration and cleans the replaced child", async () => {
+    const primary = new FakeChild();
+    const fallback = new FakeChild();
+    emitDuringRegistration(primary, "error", (listener) => {
+      listener(enoent());
+    });
+    const calls: string[] = [];
+    const spawnPlayer: SpawnPlayer = (executable) => {
+      calls.push(executable);
+      return executable === "paplay" ? primary : fallback;
+    };
+    const logical = selectPlatformPlayer("linux", spawnPlayer)?.(cue("/tmp/cue.wav"));
+    const events: string[] = [];
+    logical?.on("close", () => events.push("close"));
+    fallback.emit("close", 0, null);
+    await flushLifecycle();
+
+    expect(calls).toEqual(["paplay", "aplay"]);
+    expect(events).toEqual(["close"]);
+    expect(primary.listenerCount("error")).toBe(0);
+    expect(primary.listenerCount("spawn")).toBe(0);
+    expect(primary.listenerCount("close")).toBe(0);
+  });
+
+  it("contains fallback throws from async ENOENT and preserves synchronous throw behavior", async () => {
+    const primary = new FakeChild();
+    const fallbackFailure = new Error("fallback failed");
+    const asyncSpawn: SpawnPlayer = (executable) => {
+      if (executable === "paplay") return primary;
+      throw fallbackFailure;
+    };
+    const logical = selectPlatformPlayer("linux", asyncSpawn)?.(cue("/tmp/cue.wav"));
+    const errors: Error[] = [];
+    logical?.on("error", (error) => errors.push(error));
+    expect(() => primary.emit("error", enoent())).not.toThrow();
+    await flushLifecycle();
+    expect(errors).toEqual([fallbackFailure]);
+
+    const synchronousSpawn: SpawnPlayer = (executable) => {
+      if (executable === "paplay") throw enoent();
+      throw fallbackFailure;
+    };
+    expect(() => selectPlatformPlayer("linux", synchronousSpawn)?.(cue("/tmp/cue.wav"))).toThrow(
+      fallbackFailure,
+    );
+  });
+
+  it("settles once when the fallback emits duplicate asynchronous errors", async () => {
+    const h = spawnHarness();
+    const logical = selectPlatformPlayer("linux", h.spawnPlayer)?.(cue("/tmp/cue.wav"));
+    const errors: Error[] = [];
+    logical?.on("error", (error) => errors.push(error));
+    childAt(h.children, 0).emit("error", enoent());
+    const fallback = childAt(h.children, 1);
+    const failure = new Error("aplay failed");
+    const duplicateError = fallback.listeners("error")[0];
+    fallback.emit("error", failure);
+    duplicateError?.(new Error("duplicate"));
+    fallback.emit("close", 1, null);
+    await flushLifecycle();
+    expect(errors).toEqual([failure]);
+  });
+
+  it("makes kill safe before fallback, during fallback creation, and before queued delivery", async () => {
+    const before = spawnHarness();
+    const beforeLogical = selectPlatformPlayer("linux", before.spawnPlayer)?.(cue("/tmp/cue.wav"));
+    const latePrimaryError = childAt(before.children, 0).listeners("error")[0];
+    expect(beforeLogical?.kill()).toBe(true);
+    latePrimaryError?.(enoent());
+    expect(before.calls.map(({ executable }) => executable)).toEqual(["paplay"]);
+
+    const primary = new FakeChild();
+    const fallback = new FakeChild();
+    const duringLogical: { value: SchedulerChild | undefined } = { value: undefined };
+    const duringSpawn: SpawnPlayer = (executable) => {
+      if (executable === "paplay") return primary;
+      duringLogical.value?.kill();
+      return fallback;
+    };
+    duringLogical.value = selectPlatformPlayer("linux", duringSpawn)?.(cue("/tmp/cue.wav"));
+    primary.emit("error", enoent());
+    expect(fallback.kill).toHaveBeenCalledOnce();
+    expect(fallback.listenerCount("error")).toBe(0);
+
+    const queued = spawnHarness();
+    const queuedLogical = selectPlatformPlayer("linux", queued.spawnPlayer)?.(cue("/tmp/cue.wav"));
+    const events: string[] = [];
+    queuedLogical?.on("spawn", () => events.push("spawn"));
+    childAt(queued.children, 0).emit("spawn");
+    queuedLogical?.kill();
+    await flushLifecycle();
+    expect(events).toEqual([]);
+  });
+
+  it("lets AudioScheduler attach before synchronous duplicate lifecycle is delivered", async () => {
+    const direct = new FakeChild();
+    emitDuringRegistration(direct, "spawn", (listener) => {
+      listener();
+      listener();
+    });
+    emitDuringRegistration(direct, "close", (listener) => {
+      listener(0, null);
+      listener(1, null);
+    });
+    const launcher = selectPlatformPlayer("linux", () => direct);
+    if (launcher === null) throw new Error("Linux launcher unavailable");
+    const setTimeout = vi.fn(() => 1);
+    const scheduler = new AudioScheduler({
+      clock: { now: () => 0 },
+      timers: { setTimeout, clearTimeout: () => undefined },
+      isEventEnabled: () => true,
+      resolveEligibility: () =>
+        Promise.resolve({
+          launchable: true,
+          event: "appStart",
+          priority: 1,
+          theme: "core",
+          wavPath: "/tmp/cue.wav",
+          wavDurationMs: 1,
+        }),
+      launchPlayer: launcher,
+    });
+
+    await scheduler.request("appStart");
+    await flushLifecycle();
+    expect(scheduler.trackedChildCount).toBe(0);
+    expect(setTimeout).toHaveBeenCalledOnce();
+    expect(direct.listenerCount("error")).toBe(0);
+    expect(direct.listenerCount("spawn")).toBe(0);
+    expect(direct.listenerCount("close")).toBe(0);
   });
 });
