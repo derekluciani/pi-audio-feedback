@@ -1,8 +1,10 @@
 import { readFile } from "node:fs/promises";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import audioFeedbackExtension from "../extensions/index.js";
+vi.mock("@earendil-works/pi-coding-agent", () => ({
+  getAgentDir: () => "/managed/pi-agent",
+}));
 
 type PackageManifest = {
   name?: unknown;
@@ -28,7 +30,9 @@ async function readPackageManifest(): Promise<PackageManifest> {
 }
 
 describe("release foundation", () => {
-  it("exports a loadable Pi extension factory", () => {
+  it("exports a loadable Pi extension factory through the supplied public Pi API", async () => {
+    const { default: audioFeedbackExtension } = await import("../extensions/index.js");
+
     expect(audioFeedbackExtension).toBeTypeOf("function");
     expect(audioFeedbackExtension).toHaveLength(1);
   });
