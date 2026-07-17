@@ -422,31 +422,133 @@ describe("atomic configuration mutations", () => {
     expect((await readJson(path)).theme).toBe("soft");
   });
 
-  it.each(["write", "rename"] as const)(
-    "retains prior memory and disk state after a failed %s",
-    async (failure) => {
+  it.each([
+    ["successful", false],
+    ["best-effort failure", true],
+  ] as const)(
+    "opens, syncs, and closes the containing directory after rename on POSIX (%s)",
+    async (_scenario, syncFails) => {
       const path = await temporaryConfigPath();
-      await writeConfig(path, { version: 1, theme: "retro" });
+      const directory = join(path, "..");
+      await writeConfig(path, { version: 1, theme: "core" });
+      const steps: string[] = [];
       const fileSystem: ConfigurationFileSystem = {
         ...realFileSystem,
-        ...(failure === "rename"
-          ? { rename: async () => Promise.reject(new Error("rename failed")) }
-          : {
-              open: async (openedPath: string, flags: "wx" | "r" | number, mode?: number) => {
-                const handle = await open(openedPath, flags, mode);
-                if (flags !== "wx") return handle;
-                return {
-                  read: (buffer: Uint8Array, offset: number, length: number, position: number) =>
-                    handle.read(buffer, offset, length, position),
-                  stat: () => handle.stat(),
-                  writeFile: async () => Promise.reject(new Error("write failed")),
-                  sync: async () => handle.sync(),
-                  close: async () => handle.close(),
-                };
+        open: async (openedPath, flags, mode) => {
+          if (openedPath === directory && flags === "r") {
+            steps.push("directory-open");
+            return {
+              read: () => Promise.resolve({ bytesRead: 0 }),
+              stat: () =>
+                Promise.resolve({
+                  size: 0,
+                  dev: 0,
+                  ino: 0,
+                  isSymbolicLink: () => false,
+                  isFile: () => false,
+                }),
+              writeFile: () => Promise.resolve(),
+              sync: () => {
+                steps.push("directory-sync");
+                return syncFails
+                  ? Promise.reject(new Error("directory sync failed"))
+                  : Promise.resolve();
               },
-            }),
+              close: () => {
+                steps.push("directory-close");
+                return Promise.resolve();
+              },
+            };
+          }
+          return open(openedPath, flags, mode);
+        },
+        rename: async (oldPath, newPath) => {
+          steps.push("rename");
+          await rename(oldPath, newPath);
+        },
       };
-      const store = new ConfigurationStore({ path, fileSystem });
+      const store = new ConfigurationStore({ path, fileSystem, platform: "linux" });
+
+      expect(await store.mutate({ theme: "retro" })).toMatchObject({
+        ok: true,
+        configuration: { theme: "retro" },
+      });
+      expect(steps).toEqual(["rename", "directory-open", "directory-sync", "directory-close"]);
+      expect(store.current.configuration.theme).toBe("retro");
+      expect((await readJson(path)).theme).toBe("retro");
+    },
+  );
+
+  it("does not open or flush the containing directory on Windows", async () => {
+    const path = await temporaryConfigPath();
+    const directory = join(path, "..");
+    await writeConfig(path, { version: 1, theme: "core" });
+    const directoryOpens: string[] = [];
+    const fileSystem: ConfigurationFileSystem = {
+      ...realFileSystem,
+      open: async (openedPath, flags, mode) => {
+        if (openedPath === directory) directoryOpens.push(String(flags));
+        return open(openedPath, flags, mode);
+      },
+    };
+    const store = new ConfigurationStore({ path, fileSystem, platform: "win32" });
+
+    expect(await store.mutate({ theme: "soft" })).toMatchObject({ ok: true });
+    expect(directoryOpens).toEqual([]);
+    expect(store.current.configuration.theme).toBe("soft");
+    expect((await readJson(path)).theme).toBe("soft");
+  });
+
+  it.each(["write", "rename"] as const)(
+    "closes and removes the same-directory temp after a failed %s",
+    async (failure) => {
+      const path = await temporaryConfigPath();
+      const directory = join(path, "..");
+      const temporaryPath = join(directory, `.${CONFIG_FILE_NAME}.failed-${failure}.tmp`);
+      await writeConfig(path, { version: 1, theme: "retro" });
+      const cleanupSteps: string[] = [];
+      const fileSystem: ConfigurationFileSystem = {
+        ...realFileSystem,
+        open: async (openedPath, flags, mode) => {
+          const handle = await open(openedPath, flags, mode);
+          if (flags !== "wx") return handle;
+          expect(openedPath).toBe(temporaryPath);
+          return {
+            read: (buffer, offset, length, position) =>
+              handle.read(buffer, offset, length, position),
+            stat: () => handle.stat(),
+            writeFile: async (data, encoding) => {
+              if (failure === "write") {
+                cleanupSteps.push("write-failed");
+                throw new Error("write failed");
+              }
+              await handle.writeFile(data, encoding);
+            },
+            sync: () => handle.sync(),
+            close: async () => {
+              cleanupSteps.push("temp-close");
+              await handle.close();
+            },
+          };
+        },
+        rename: async (oldPath, newPath) => {
+          if (failure === "rename") {
+            cleanupSteps.push("rename-failed");
+            throw new Error("rename failed");
+          }
+          await rename(oldPath, newPath);
+        },
+        unlink: async (unlinkedPath) => {
+          cleanupSteps.push("temp-unlink");
+          expect(unlinkedPath).toBe(temporaryPath);
+          await unlink(unlinkedPath);
+        },
+      };
+      const store = new ConfigurationStore({
+        path,
+        fileSystem,
+        uniqueId: () => `failed-${failure}`,
+      });
       await store.load();
       const stdout = vi.spyOn(process.stdout, "write");
       const stderr = vi.spyOn(process.stderr, "write");
@@ -455,6 +557,13 @@ describe("atomic configuration mutations", () => {
         ok: false,
         reason: "write-failed",
       });
+      expect(cleanupSteps).toEqual(
+        failure === "write"
+          ? ["write-failed", "temp-close", "temp-unlink"]
+          : ["temp-close", "rename-failed", "temp-unlink"],
+      );
+      expect(await readdir(directory)).toEqual([CONFIG_FILE_NAME]);
+      await expect(lstat(temporaryPath)).rejects.toMatchObject({ code: "ENOENT" });
       expect(store.current.configuration.theme).toBe("retro");
       expect((await readJson(path)).theme).toBe("retro");
       expect(stdout).not.toHaveBeenCalled();
@@ -462,10 +571,12 @@ describe("atomic configuration mutations", () => {
     },
   );
 
-  it("rejects and preserves a symlink introduced immediately before rename", async () => {
+  it("removes its temp and preserves a protected path introduced before rename", async () => {
     const path = await temporaryConfigPath();
-    const original = join(path, "..", "original.json");
-    const target = join(path, "..", "target.json");
+    const directory = join(path, "..");
+    const original = join(directory, "original.json");
+    const target = join(directory, "target.json");
+    const temporaryPath = join(directory, `.${CONFIG_FILE_NAME}.protected-race.tmp`);
     await writeConfig(path, { version: 1, theme: "core" });
     await writeConfig(target, { version: 1, theme: "retro" });
     let targetLstats = 0;
@@ -478,8 +589,17 @@ describe("atomic configuration mutations", () => {
         }
         return lstat(checkedPath);
       },
+      unlink: async (unlinkedPath) => {
+        expect(unlinkedPath).toBe(temporaryPath);
+        await unlink(unlinkedPath);
+      },
     };
-    const store = new ConfigurationStore({ path, fileSystem });
+    const unlinkSpy = vi.spyOn(fileSystem, "unlink");
+    const store = new ConfigurationStore({
+      path,
+      fileSystem,
+      uniqueId: () => "protected-race",
+    });
 
     expect(await store.mutate({ theme: "soft" })).toEqual({
       ok: false,
@@ -489,6 +609,12 @@ describe("atomic configuration mutations", () => {
     expect((await readJson(target)).theme).toBe("retro");
     expect((await readJson(original)).theme).toBe("core");
     expect(store.current.configuration.theme).toBe("core");
+    expect(unlinkSpy).toHaveBeenCalledOnce();
+    expect(unlinkSpy).toHaveBeenCalledWith(temporaryPath);
+    await expect(lstat(temporaryPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await readdir(directory)).sort()).toEqual(
+      [CONFIG_FILE_NAME, "original.json", "target.json"].sort(),
+    );
   });
 
   it("rejects invalid complete merges without touching disk or memory", async () => {
