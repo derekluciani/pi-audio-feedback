@@ -7,9 +7,10 @@ import { EventEmitter } from "node:events";
 import * as nodeFileSystem from "node:fs/promises";
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { dirname, join, normalize, resolve } from "node:path";
 import ts from "typescript";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const hostMocks = vi.hoisted(() => {
   const networkCalls: string[] = [];
@@ -48,6 +49,16 @@ vi.mock("node:net", () => ({
   createServer: hostMocks.forbidden("net.createServer"),
   Socket: hostMocks.forbidden("new net.Socket"),
 }));
+vi.mock("node:http2", () => ({
+  connect: hostMocks.forbidden("http2.connect"),
+  createServer: hostMocks.forbidden("http2.createServer"),
+  createSecureServer: hostMocks.forbidden("http2.createSecureServer"),
+}));
+vi.mock("node:tls", () => ({
+  connect: hostMocks.forbidden("tls.connect"),
+  createServer: hostMocks.forbidden("tls.createServer"),
+  TLSSocket: hostMocks.forbidden("new tls.TLSSocket"),
+}));
 vi.mock("node:dns", () => ({
   lookup: hostMocks.forbidden("dns.lookup"),
   resolve: hostMocks.forbidden("dns.resolve"),
@@ -57,33 +68,53 @@ vi.mock("node:dns", () => ({
     resolve: hostMocks.forbidden("dns.promises.resolve"),
   },
 }));
+vi.mock("node:dns/promises", () => ({
+  lookup: hostMocks.forbidden("dns/promises.lookup"),
+  resolve: hostMocks.forbidden("dns/promises.resolve"),
+  Resolver: hostMocks.forbidden("new dns/promises.Resolver"),
+}));
+vi.mock("node:dgram", () => ({
+  createSocket: hostMocks.forbidden("dgram.createSocket"),
+  Socket: hostMocks.forbidden("new dgram.Socket"),
+}));
+
+vi.stubGlobal("fetch", hostMocks.forbidden("global.fetch"));
 
 const { LITERAL_ESCAPE_SEQUENCE, registerAudioFeedbackExtension } =
   await import("../extensions/index.js");
 import type {
-  AudioFeedbackResourceSnapshot,
   ConfigurationFileSystem,
   LaunchableAudioCue,
   SchedulerChild,
 } from "../extensions/index.js";
 
-const NETWORK_MODULES = new Set([
-  "http",
-  "node:http",
-  "https",
-  "node:https",
-  "http2",
-  "node:http2",
-  "net",
-  "node:net",
-  "tls",
-  "node:tls",
-  "dns",
-  "node:dns",
-  "dns/promises",
-  "node:dns/promises",
-  "dgram",
-  "node:dgram",
+const ALLOWED_RUNTIME_MODULES = new Set([
+  "@earendil-works/pi-coding-agent",
+  "@earendil-works/pi-tui",
+  "node:child_process",
+  "node:crypto",
+  "node:events",
+  "node:fs",
+  "node:fs/promises",
+  "node:os",
+  "node:path",
+  "node:url",
+]);
+const FORBIDDEN_CAPABILITIES = new Set([
+  "require",
+  "createRequire",
+  "eval",
+  "Function",
+  "fetch",
+  "WebSocket",
+  "EventSource",
+  "XMLHttpRequest",
+  "sendBeacon",
+  "getBuiltinModule",
+  "_linkedBinding",
+  "binding",
+  "constructor",
+  "__proto__",
 ]);
 const temporaryDirectories: string[] = [];
 
@@ -93,7 +124,7 @@ class FakeChild extends EventEmitter implements SchedulerChild {
 
 type Hook = (event: Readonly<Record<string, unknown>>, context: ExtensionContext) => unknown;
 type Command = (args: string, context: ExtensionCommandContext) => unknown;
-type TestComponent = { handleInput?(data: string): void };
+type TestComponent = { handleInput?(data: string): void; render?(width: number): string[] };
 
 interface RuntimeHarness {
   readonly hooks: Map<string, Hook>;
@@ -106,105 +137,114 @@ interface RuntimeHarness {
   readonly removeTerminalListener: ReturnType<typeof vi.fn>;
   readonly components: TestComponent[];
   readonly notifications: string[];
+  readonly focusOverlay: ReturnType<typeof vi.fn>;
   activeComponentCount(): number;
-  schedulerResources(): AudioFeedbackResourceSnapshot;
 }
 
-function callName(expression: ts.Expression): string | null {
-  if (ts.isIdentifier(expression)) return expression.text;
-  if (ts.isPropertyAccessExpression(expression)) {
-    const parent = callName(expression.expression);
-    return parent === null ? expression.name.text : `${parent}.${expression.name.text}`;
-  }
+function staticString(expression: ts.Expression): string | null {
+  if (ts.isStringLiteralLike(expression)) return expression.text;
   if (
-    ts.isElementAccessExpression(expression) &&
-    ts.isStringLiteral(expression.argumentExpression)
+    ts.isBinaryExpression(expression) &&
+    expression.operatorToken.kind === ts.SyntaxKind.PlusToken
   ) {
-    const parent = callName(expression.expression);
-    return parent === null
-      ? expression.argumentExpression.text
-      : `${parent}.${expression.argumentExpression.text}`;
+    const left = staticString(expression.left);
+    const right = staticString(expression.right);
+    return left === null || right === null ? null : left + right;
   }
   return null;
 }
 
-function assertSafeModuleSpecifier(file: string, node: ts.Node, value: ts.Expression): void {
-  expect(
-    ts.isStringLiteralLike(value),
-    `${file}:${String(node.getStart())} dynamic module specifier`,
-  ).toBe(true);
-  if (!ts.isStringLiteralLike(value)) return;
+function assertAllowedModuleSpecifier(
+  file: string,
+  extensionRoot: string,
+  publishedFiles: ReadonlySet<string>,
+  value: ts.Expression,
+): void {
+  if (!ts.isStringLiteralLike(value)) {
+    throw new Error(`${file}: module specifier must be a string literal`);
+  }
   const specifier = value.text;
-  const networkModule = [...NETWORK_MODULES].some(
-    (candidate) => specifier === candidate || specifier.startsWith(`${candidate}/`),
-  );
-  expect(networkModule, `${file}: forbidden ${specifier}`).toBe(false);
-  expect(/^https?:\/\//u.test(specifier), `${file}: URL module ${specifier}`).toBe(false);
+  if (!specifier.startsWith(".")) {
+    if (!ALLOWED_RUNTIME_MODULES.has(specifier)) {
+      throw new Error(`${file}: runtime module is not allowlisted: ${specifier}`);
+    }
+    return;
+  }
+  const resolved = normalize(resolve(dirname(file), specifier)).replace(/\.js$/u, ".ts");
+  if (!resolved.startsWith(`${extensionRoot}/`) || !publishedFiles.has(resolved)) {
+    throw new Error(`${file}: relative module escapes or does not resolve: ${specifier}`);
+  }
 }
 
-function assertNoNetworkEscape(file: string, source: ts.SourceFile): void {
+function assertNoRuntimeCapability(
+  file: string,
+  source: ts.SourceFile,
+  extensionRoot: string,
+  publishedFiles: ReadonlySet<string>,
+): void {
+  const globalRoots = new Set(["globalThis", "global", "window", "navigator"]);
+  let discoveredAlias = true;
+  while (discoveredAlias) {
+    discoveredAlias = false;
+    const discover = (node: ts.Node): void => {
+      if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.initializer !== undefined &&
+        ts.isIdentifier(node.initializer) &&
+        globalRoots.has(node.initializer.text) &&
+        !globalRoots.has(node.name.text)
+      ) {
+        globalRoots.add(node.name.text);
+        discoveredAlias = true;
+      }
+      ts.forEachChild(node, discover);
+    };
+    discover(source);
+  }
+
   const visit = (node: ts.Node): void => {
     if (
       (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
       node.moduleSpecifier !== undefined
     ) {
-      assertSafeModuleSpecifier(file, node, node.moduleSpecifier);
+      assertAllowedModuleSpecifier(file, extensionRoot, publishedFiles, node.moduleSpecifier);
     }
     if (ts.isImportEqualsDeclaration(node)) {
-      throw new Error(`${file}:${String(node.getStart())} import-equals can bypass the ESM graph`);
+      throw new Error(`${file}: import-equals is forbidden`);
     }
-    if (ts.isCallExpression(node)) {
-      if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
-        expect(node.arguments).toHaveLength(1);
-        const argument = node.arguments[0];
-        if (argument !== undefined) assertSafeModuleSpecifier(file, node, argument);
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      throw new Error(`${file}: dynamic import is forbidden`);
+    }
+    if (ts.isIdentifier(node) && FORBIDDEN_CAPABILITIES.has(node.text)) {
+      throw new Error(`${file}: forbidden runtime capability: ${node.text}`);
+    }
+    if (ts.isPropertyAccessExpression(node) && FORBIDDEN_CAPABILITIES.has(node.name.text)) {
+      throw new Error(`${file}: forbidden runtime property: ${node.name.text}`);
+    }
+    if (ts.isElementAccessExpression(node)) {
+      const property = staticString(node.argumentExpression);
+      if (property !== null && FORBIDDEN_CAPABILITIES.has(property)) {
+        throw new Error(`${file}: forbidden computed runtime property: ${property}`);
       }
-      const name = callName(node.expression);
-      const forbiddenCall =
-        name === "fetch" ||
-        name === "globalThis.fetch" ||
-        name === "eval" ||
-        name === "Function" ||
-        name === "require" ||
-        name === "createRequire" ||
-        name?.endsWith(".createRequire") === true ||
-        name === "process.binding" ||
-        name === "process._linkedBinding" ||
-        name === "process.getBuiltinModule" ||
-        name === "module.constructor._load";
-      expect(
-        forbiddenCall,
-        `${file}:${String(node.getStart())} forbidden call ${name ?? "<computed>"}`,
-      ).toBe(false);
-    }
-    if (ts.isNewExpression(node)) {
-      const name = callName(node.expression);
-      const forbiddenConstructor =
-        name === "Function" ||
-        name === "WebSocket" ||
-        name === "EventSource" ||
-        name === "globalThis.WebSocket" ||
-        name === "globalThis.EventSource";
-      expect(
-        forbiddenConstructor,
-        `${file}:${String(node.getStart())} forbidden constructor ${name ?? "<computed>"}`,
-      ).toBe(false);
-    }
-    if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
-      const name = callName(node);
-      expect(
-        name === "process.mainModule" ||
-          name === "globalThis.fetch" ||
-          name === "globalThis.eval" ||
-          name === "globalThis.Function" ||
-          name === "globalThis.WebSocket" ||
-          name === "globalThis.EventSource",
-        `${file}:${String(node.getStart())} forbidden binding ${name ?? "<computed>"}`,
-      ).toBe(false);
+      // Fail closed for computed access on global/loader roots; product code needs none.
+      if (
+        property === null &&
+        ts.isIdentifier(node.expression) &&
+        (globalRoots.has(node.expression.text) ||
+          node.expression.text === "module" ||
+          node.expression.text === "process")
+      ) {
+        throw new Error(`${file}: dynamic global/loader property access is forbidden`);
+      }
     }
     ts.forEachChild(node, visit);
   };
   visit(source);
+}
+
+function parseFixture(name: string, sourceText: string): ts.SourceFile {
+  return ts.createSourceFile(name, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 }
 
 function installContainmentSentinels(): {
@@ -255,9 +295,9 @@ function createRuntimeHarness(
   const terminalListeners = new Set<(data: string) => unknown>();
   const components: TestComponent[] = [];
   const notifications: string[] = [];
+  const focusOverlay = vi.fn();
   let activeComponents = 0;
   let timerId = 0;
-  let inspectScheduler: (() => AudioFeedbackResourceSnapshot) | undefined;
   const removeTerminalListener = vi.fn();
   const pi = {
     on: (name: string, hook: Hook) => hooks.set(name, hook),
@@ -284,8 +324,10 @@ function createRuntimeHarness(
           keybindings: { matches(data: string, binding: string): boolean },
           done: (value: T) => void,
         ) => TestComponent,
+        options?: { onHandle?(handle: { focus(): void }): void },
       ): Promise<T> =>
         new Promise<T>((resolve) => {
+          options?.onHandle?.({ focus: focusOverlay });
           activeComponents += 1;
           let finished = false;
           const component = factory(
@@ -334,9 +376,6 @@ function createRuntimeHarness(
       clearTimeout: (handle) => activeTimers.delete(Number(handle)),
     },
     clock: { now: () => 0 },
-    onSchedulerCreated: (inspect) => {
-      inspectScheduler = inspect;
-    },
   });
   if (command === undefined) throw new Error("audio:config was not registered");
   return {
@@ -350,11 +389,8 @@ function createRuntimeHarness(
     removeTerminalListener,
     components,
     notifications,
+    focusOverlay,
     activeComponentCount: () => activeComponents,
-    schedulerResources: () => {
-      if (inspectScheduler === undefined) throw new Error("Session scheduler was not created");
-      return inspectScheduler();
-    },
   };
 }
 
@@ -376,11 +412,6 @@ async function flush(): Promise<void> {
 }
 
 function assertPlayerResourcesClean(harness: RuntimeHarness): void {
-  expect(harness.schedulerResources()).toMatchObject({
-    trackedChildCount: 0,
-    pendingEvent: null,
-    hasActiveWatchdog: false,
-  });
   expect(harness.activeTimers.size).toBe(0);
   for (const child of harness.children) {
     expect(child.eventNames()).toEqual([]);
@@ -390,15 +421,24 @@ function assertPlayerResourcesClean(harness: RuntimeHarness): void {
   }
 }
 
-async function shutdownAndAssertClean(harness: RuntimeHarness): Promise<void> {
+async function shutdownAndAssertClean(
+  harness: RuntimeHarness,
+  expectedTerminalDisposals = 1,
+): Promise<void> {
+  const liveChildren = harness.children.filter((child) => child.eventNames().length > 0);
   await expect(
     invoke(harness, "session_shutdown", { type: "session_shutdown", reason: "quit" }),
   ).resolves.toBeUndefined();
   assertPlayerResourcesClean(harness);
+  for (const child of liveChildren) expect(child.kill).toHaveBeenCalledOnce();
   expect(harness.terminalListeners.size).toBe(0);
-  expect(harness.removeTerminalListener).toHaveBeenCalledOnce();
+  expect(harness.removeTerminalListener).toHaveBeenCalledTimes(expectedTerminalDisposals);
   expect(harness.activeComponentCount()).toBe(0);
 }
+
+beforeEach(() => {
+  vi.stubGlobal("fetch", hostMocks.forbidden("global.fetch"));
+});
 
 afterEach(async () => {
   vi.unstubAllGlobals();
@@ -407,10 +447,21 @@ afterEach(async () => {
 });
 
 describe("runtime privacy and output containment", () => {
-  it("uses a TypeScript AST to prove the closed runtime graph has no network or loader escape", async () => {
-    const extensionDirectory = new URL("../extensions/", import.meta.url);
-    const files = (await readdir(extensionDirectory)).filter((path) => path.endsWith(".ts")).sort();
-    expect(files).toEqual([
+  it("allows only the closed published runtime graph and rejects loader/network escapes", async () => {
+    const extensionRoot = fileURLToPath(new URL("../extensions", import.meta.url));
+    const collectTypeScriptFiles = async (directory: string): Promise<string[]> => {
+      const entries = await readdir(directory, { withFileTypes: true });
+      const nested = await Promise.all(
+        entries.map(async (entry) => {
+          const path = join(directory, entry.name);
+          if (entry.isDirectory()) return collectTypeScriptFiles(path);
+          return entry.isFile() && entry.name.endsWith(".ts") ? [path] : [];
+        }),
+      );
+      return nested.flat();
+    };
+    const files = (await collectTypeScriptFiles(extensionRoot)).sort();
+    expect(files.map((file) => file.slice(extensionRoot.length + 1))).toEqual([
       "audio-catalog.ts",
       "config.ts",
       "eligibility.ts",
@@ -420,17 +471,50 @@ describe("runtime privacy and output containment", () => {
       "settings.ts",
       "terminal-outcomes.ts",
     ]);
-
+    const publishedFiles = new Set(files);
     for (const file of files) {
-      const sourceText = await nodeFileSystem.readFile(new URL(file, extensionDirectory), "utf8");
-      const source = ts.createSourceFile(
+      const sourceText = await nodeFileSystem.readFile(file, "utf8");
+      assertNoRuntimeCapability(
         file,
-        sourceText,
-        ts.ScriptTarget.Latest,
-        true,
-        ts.ScriptKind.TS,
+        parseFixture(file, sourceText),
+        extensionRoot,
+        publishedFiles,
       );
-      assertNoNetworkEscape(file, source);
+    }
+
+    const adversarialFixtures = [
+      'import * as transport from "node:http"; transport.get("x")',
+      'import { request as send } from "node:https"; send("x")',
+      'import { createRequire as cr } from "node:module"; const r = cr(import.meta.url); r("node:https")',
+      'const { fetch: f } = globalThis; f("https://example.invalid")',
+      'const f = globalThis["fe" + "tch"]; f("https://example.invalid")',
+      'const globals = globalThis; const key = "fetch"; globals[key]("https://example.invalid")',
+      '(0, eval)("source")',
+      'const C = Function; C("source")',
+      'new (globalThis["Fun" + "ction"])("source")',
+      'void import("node:http")',
+      'const load = require; load("node:http")',
+      'const cr = module["create" + "Require"]; cr(import.meta.url)',
+      ...["node:http2", "node:tls", "node:dns", "node:dns/promises", "node:dgram"].map(
+        (specifier) => `import * as boundary from "${specifier}"; void boundary`,
+      ),
+      'const { WebSocket: SocketAlias } = globalThis; new SocketAlias("wss://example.invalid")',
+      'navigator["send" + "Beacon"]("https://example.invalid")',
+      "new XMLHttpRequest()",
+    ];
+    for (const [index, fixture] of adversarialFixtures.entries()) {
+      let rejected = false;
+      try {
+        assertNoRuntimeCapability(
+          `fixture-${String(index)}.ts`,
+          parseFixture(`fixture-${String(index)}.ts`, fixture),
+          extensionRoot,
+          publishedFiles,
+        );
+      } catch {
+        rejected = true;
+      }
+      expect(rejected, `analyzer accepted adversarial fixture: ${fixture}`).toBe(true);
     }
   });
 
@@ -551,15 +635,29 @@ describe("runtime privacy and output containment", () => {
       const navigation = harness.children[1];
       navigation?.emit("error", Object.assign(new Error("player unavailable"), { code: "ENOENT" }));
       await flush();
+      const requestsBeforeMutation = [...harness.starts];
       component?.handleInput?.("enter");
       await vi.waitFor(() => {
-        expect(harness.notifications).toContain(
+        expect(harness.notifications).toEqual([
           "Audio settings could not be saved; the previous value was restored.",
-        );
+        ]);
       });
+      expect(harness.starts).toEqual([...requestsBeforeMutation, "settingsToggleOff"]);
+      expect(harness.children).toHaveLength(3);
       const toggleOff = harness.children.at(-1);
       toggleOff?.emit("spawn");
       toggleOff?.emit("close", 0, null);
+      await flush();
+
+      // The failed all-off mutation also leaves the real store's in-memory toggles unchanged.
+      component?.handleInput?.("down");
+      await flush();
+      component?.handleInput?.("enter");
+      await vi.waitFor(() => {
+        expect(component?.render?.(120).some((line) => line.endsWith("appStart [on]"))).toBe(true);
+      });
+      expect(harness.notifications).toHaveLength(1);
+      component?.handleInput?.("escape");
       await flush();
       component?.handleInput?.("escape");
       await command;
@@ -582,6 +680,72 @@ describe("runtime privacy and output containment", () => {
     } finally {
       output.restore();
     }
+  });
+
+  it("clears the Settings singleton after close and opens a fresh custom component", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "audio settings reopen "));
+    temporaryDirectories.push(directory);
+    const harness = createRuntimeHarness(directory);
+    await invoke(harness, "session_start", { type: "session_start", reason: "new" });
+
+    const firstCommand = Promise.resolve(
+      harness.command("", harness.context as ExtensionCommandContext),
+    );
+    await vi.waitFor(() => {
+      expect(harness.components).toHaveLength(1);
+    });
+    harness.components[0]?.handleInput?.("escape");
+    await firstCommand;
+    expect(harness.activeComponentCount()).toBe(0);
+
+    const secondCommand = Promise.resolve(
+      harness.command("", harness.context as ExtensionCommandContext),
+    );
+    await vi.waitFor(() => {
+      expect(harness.components).toHaveLength(2);
+    });
+    expect(harness.activeComponentCount()).toBe(1);
+    await harness.command("", harness.context as ExtensionCommandContext);
+    expect(harness.focusOverlay).toHaveBeenCalledOnce();
+    harness.components[1]?.handleInput?.("escape");
+    await secondCommand;
+    for (const child of harness.children) child.emit("error", new Error("fixture cleanup"));
+    await flush();
+    await shutdownAndAssertClean(harness);
+  });
+
+  it("disposes open Settings on shutdown without retaining a stale controller", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "audio settings shutdown "));
+    temporaryDirectories.push(directory);
+    const harness = createRuntimeHarness(directory);
+    await invoke(harness, "session_start", { type: "session_start", reason: "new" });
+    const openCommand = Promise.resolve(
+      harness.command("", harness.context as ExtensionCommandContext),
+    );
+    await vi.waitFor(() => {
+      expect(harness.activeComponentCount()).toBe(1);
+    });
+
+    await shutdownAndAssertClean(harness);
+    await openCommand;
+    const focusCount = harness.focusOverlay.mock.calls.length;
+    await harness.command("", harness.context as ExtensionCommandContext);
+    expect(harness.components).toHaveLength(1);
+    expect(harness.focusOverlay).toHaveBeenCalledTimes(focusCount);
+
+    await invoke(harness, "session_start", { type: "session_start", reason: "new" });
+    expect(harness.terminalListeners.size).toBe(1);
+    const freshCommand = Promise.resolve(
+      harness.command("", harness.context as ExtensionCommandContext),
+    );
+    await vi.waitFor(() => {
+      expect(harness.components).toHaveLength(2);
+    });
+    expect(harness.activeComponentCount()).toBe(1);
+    await shutdownAndAssertClean(harness, 2);
+    await freshCommand;
+    expect(harness.activeTimers.size).toBe(0);
+    for (const child of harness.children) expect(child.eventNames()).toEqual([]);
   });
 
   it("opens Settings while idle and treats raw literal Escape as additive, never an abort", async () => {

@@ -75,26 +75,34 @@ audibility.
 
 ## §11.5 Privacy, output, and resource containment
 
-- Complete static runtime-source traversal: `tests/privacy.test.ts` parses every extension module
-  with the TypeScript compiler AST and inspects imports, exports, dynamic imports, calls,
-  constructors, property bindings, `require`/`createRequire`, process loader bindings, and
-  eval/Function escapes. It rejects HTTP/HTTPS/net/TLS/DNS/datagram modules and URL imports. This is
-  parser-based, not regex.
-- Dynamic offline boundary: the same test hoists public Pi/TUI host mocks before importing the
-  extension (so Node 20 does not load Pi's unrelated undici path), and installs throwing/counting
-  `fetch`, `node:http`, `node:https`, `node:net`, and `node:dns` sentinels. The separate
-  `tests/package-install.test.ts` job retains real minimum-Pi/package-loader evidence.
+- Closed static runtime graph: `tests/privacy.test.ts` recursively parses every published
+  `extensions/**/*.ts` file with the TypeScript compiler AST. Import/export declarations may name
+  only the two Pi peers, the exact Node built-ins used by production, or relative modules that
+  resolve inside that published file set. Import-equals and every dynamic import are forbidden.
+  Identifier/property checks fail closed on require/createRequire, direct or indirect eval,
+  Function, process loader access, and fetch/WebSocket/EventSource/XMLHttpRequest/sendBeacon,
+  including destructuring and statically computed property names. Adversarial fixtures verify
+  aliases, destructuring, indirect eval, Function construction/calls, computed globals, dynamic
+  imports, createRequire/require aliases, and node:http2/tls/dns/dns-promises/dgram are rejected.
+- Dynamic offline boundary: before production extension import, the same test hoists throwing,
+  counting mocks for global `fetch` and the entry APIs of `node:http`, `node:https`, `node:http2`,
+  `node:net`, `node:tls`, `node:dns`, `node:dns/promises`, and `node:dgram`. The separate
+  `tests/package-install.test.ts` retains real minimum-Pi/package-loader evidence.
 - The assembled production-extension matrix runs session hooks for successful `close(0)`, nonzero
   `close(7)`, synchronous launch throw, and asynchronous pre-spawn `error`; runs malformed real
-  configuration and missing packaged assets through session/Settings; and reaches an injected rename
-  failure through a real `ConfigurationStore` mutation from the Settings component/command.
+  configuration and missing packaged assets through session/Settings; and reaches an injected real
+  `ConfigurationStore` rename failure from Settings. The rename fixture asserts unchanged disk and
+  in-memory toggles, one notice, and exactly the accepted pre-save toggle-off request with no
+  post-save cue.
 - Every assembled case captures `console.log/info/warn/error/debug/trace`, stdout, stderr, and
   unhandled promise rejections and asserts no output/rejection. Dynamic network counters remain
   zero.
-- After player error/close, Settings close, and shutdown, assembled tests assert the scheduler's
-  tracked-child/pending/watchdog state, injected timer map, all child event listeners, raw-terminal
-  listener/disposer, and Settings custom-component singleton are clean (or remain installed only for
-  the live session, as required by PRD §7.2).
+- Resource cleanup is observed without product diagnostics: injected timer ownership, fake-child
+  listener sets and kill behavior, custom-component promises/counts, command focus behavior, and raw
+  terminal listener disposers. Tests close then reopen Settings to prove its singleton clears, and
+  shut down while Settings is open to prove disposal, no stale focus, and a fresh next-session
+  component. Player close/error and shutdown leave no test-owned timers or child listeners.
+
 - Exact ignored player stdio and platform argument contracts remain independently covered by
   `tests/platform-adapters.test.ts` —
   `uses ignored stdio so success, errors, and nonzero closes cannot leak output`.

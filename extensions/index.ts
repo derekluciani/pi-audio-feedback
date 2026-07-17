@@ -35,13 +35,6 @@ export * from "./settings.js";
 /** The exact raw terminal sequence for a literal physical Escape key. */
 export const LITERAL_ESCAPE_SEQUENCE = "\u001b";
 
-export interface AudioFeedbackResourceSnapshot {
-  readonly trackedChildCount: number;
-  readonly pendingEvent: AudioEvent | null;
-  readonly hasActiveWatchdog: boolean;
-  readonly isShutdown: boolean;
-}
-
 export interface AudioFeedbackRuntimeOptions {
   readonly agentDirectory?: string;
   readonly environment?: Readonly<Record<string, string | undefined>>;
@@ -53,8 +46,6 @@ export interface AudioFeedbackRuntimeOptions {
   readonly launchPlayer?: PlayerLauncher;
   /** Injectable persistence boundary used by deterministic host integration tests. */
   readonly configurationFileSystem?: ConfigurationFileSystem;
-  /** Supplies a read-only resource inspector for deterministic host-boundary tests. */
-  readonly onSchedulerCreated?: (inspect: () => AudioFeedbackResourceSnapshot) => void;
 }
 
 const systemClock: SchedulerClock = { now: Date.now };
@@ -182,12 +173,6 @@ function createSessionRuntime(
     },
   });
   runtime = new AudioSessionRuntime(scheduler);
-  options.onSchedulerCreated?.(() => ({
-    trackedChildCount: scheduler.trackedChildCount,
-    pendingEvent: scheduler.pendingEvent,
-    hasActiveWatchdog: scheduler.hasActiveWatchdog,
-    isShutdown: scheduler.isShutdown,
-  }));
   return runtime;
 }
 
