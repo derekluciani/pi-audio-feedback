@@ -1,0 +1,9 @@
+_ignore/
+.pi/
+.web-kits/
+assets/patches/
+node_modules/
+AGENTS.md
+PRD_Audio_Feedback_Implementation.md
+Coding_Best_Practices.md
+project-orchestrator.md

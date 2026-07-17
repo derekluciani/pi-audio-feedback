@@ -1,0 +1,50 @@
+{
+  "name": "pi-audio-feedback",
+  "version": "0.1.0",
+  "description": "Local audio feedback for the Pi coding agent",
+  "type": "module",
+  "exports": "./extensions/index.ts",
+  "files": [
+    "extensions",
+    "assets/wav",
+    "scripts/play-wav.ps1",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "README.md"
+  ],
+  "scripts": {
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "author": "Derek Luciani",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.80.6",
+    "@types/node": "^20.19.33",
+    "eslint": "9.39.2",
+    "prettier": "3.9.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.54.0",
+    "vitest": "3.2.4"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ],
+    "compatibility": {
+      "@earendil-works/pi-coding-agent": ">=0.80.6 <1.0.0"
+    }
+  }
+}
