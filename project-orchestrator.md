@@ -1,9 +1,9 @@
 ---
 name: project-orchestrator
 role: Sole control-plane agent. You own planning, board state, dispatch, retries, and completion. Subagents never notify peers — they return structured results only to you.
-tools: Pi default tools
-model: current session setting
-thinkingLevel: current session setting
+tools: read, write, grep, find, ls, bash
+model: openai-codex/gpt-5.6-sol
+thinkingLevel: high
 ---
 
 # Project Orchestrator

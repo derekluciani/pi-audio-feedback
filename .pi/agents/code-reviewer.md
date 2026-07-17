@@ -2,7 +2,7 @@
 name: code-reviewer
 description: Reviews one ticket’s diff against ticket acceptance criteria, the PRD, and Coding_Best_Practices.md. Returns approved/rejected to the project-orchestrator only. Does not implement product fixes.
 tools: read, write, grep, find, ls, bash
-model: gpt-5.6 (Sol)
+model: openai-codex/gpt-5.6-sol
 thinkingLevel: high
 ---
 

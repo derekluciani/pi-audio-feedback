@@ -1,8 +1,8 @@
 ---
 name: coder
 description: Implements one GitHub Project ticket end-to-end, verifies acceptance commands, and returns a structured result to the project-orchestrator. Does not notify the code-reviewer.
-tools: Pi default tools
-model: gpt-5.6 (Sol)
+tools: read, write, grep, find, ls, bash
+model: openai-codex/gpt-5.6-sol
 thinkingLevel: medium
 ---
 

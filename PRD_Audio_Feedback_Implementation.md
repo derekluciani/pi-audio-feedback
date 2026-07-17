@@ -1,6 +1,8 @@
 # `Pi-Audio-Feedback` Extension — Implementation Specification 
 
-**Purpose:** Define the complete, testable implementation contract for the published Pi-Audio-Feedback package 
+**Purpose:** Define the complete, testable implementation contract for the published Pi-Audio-Feedback package
+
+**Status:** **Approved for implementation**
 
 ---
 
@@ -24,7 +26,7 @@
 
 ### Implementation-approved status gate
 
-The status may change to **Approved for implementation** only after the owner approves the release inputs in Section 13. Until then, all technical rules below are proposed normative defaults rather than permission to publish.
+The owner approvals recorded in Section 13 satisfy the implementation gate. This specification is **Approved for implementation**, and all technical rules in this document are normative. Publication remains contingent on passing the Section 11 automated and manual release criteria.
 
 ---
 
@@ -35,8 +37,8 @@ Audio is eligible only when every condition below is true at **cue launch time**
 1. `ctx.mode === "tui"`.
 2. No CI marker is truthy.
 3. No SSH marker is present.
-4. The event toggle is enabled in the current in-memory configuration.
-5. The event has a valid mapping and packaged WAV for the active audio theme.
+4. The event toggle is enabled under the request's toggle policy. The default policy checks current in-memory configuration at launch. Only the pre-save `settingsToggleOff` confirmations defined in Section 9 may use an enabled-at-acceptance snapshot.
+5. The event has a valid mapping and packaged WAV for the request's theme: the active audio theme by default, or the validated candidate-theme override used only by Settings preview.
 
 ### 2.1 CI rule
 
@@ -71,10 +73,10 @@ No UI notice is emitted when a cue is suppressed by mode, CI, or SSH policy.
 | Pi compatibility | `@earendil-works/pi-coding-agent >=0.80.6 <1.0.0`; this is the first verified API version for `agent_settled`, `getAgentDir()`, lifecycle hooks, and custom TUI APIs used here. |
 | Node compatibility | `>=20`; CI tests Node 20, 22, and 24. |
 | Pi dependencies | Pi-provided packages imported by the extension are listed as `peerDependencies` with `"*"`, not bundled. |
-| License | Proposed: MIT for package code, generated WAVs, and package documentation, with bundled third-party notices. Owner approval required before publish. |
+| License | MIT for package code, generated WAVs, and package documentation, with all required bundled third-party notices. |
 | Versioning | Semantic Versioning. Pre-1.0 breaking configuration/event changes increment the minor version. |
 | Runtime network | Forbidden. All patch data and WAVs are inside the published tarball. |
-| .npmignore | Add any items to this file that isn't necessary for public consumption |
+| Package inclusion | Use `package.json#files` and/or `.npmignore` to exclude non-runtime material while explicitly retaining `scripts/play-wav.ps1`, extension code, generated WAVs, notices, and package metadata. |
 
 The README must document supported platforms, unsupported SSH/CI/WSL behavior, security implications of installing Pi packages, `/audio:config`, and the exact Pi/Node compatibility range.
 
@@ -99,6 +101,11 @@ The release repository contains `assets/patches/manifest.json`. It is the author
     "fadeOutMs": 5,
     "normalization": "none"
   },
+  "provenance": {
+    "repository": "https://github.com/derekluciani/pi-audio-feedback.git",
+    "ref": "e2c768728106736413fb4ff725b20303afbe9a06",
+    "upstreamCatalog": "https://audio.raphaelsalaja.com/library"
+  },
   "themes": {
     "core": { "source": "assets/patches/core.json", "sha256": "b9702e7cc9e018cbd42736ece94d47540697ac17e675c2d531c2db40ffa3ddfb" },
     "retro": { "source": "assets/patches/retro.json", "sha256": "134013b63261d50c2a24049e758f0346e1f9f474de2c6c9c1cdb33db6d20b2fc" },
@@ -107,9 +114,7 @@ The release repository contains `assets/patches/manifest.json`. It is the author
   }
 }
 ```
-| Concern | Owner response |
-|---|---|
-| Before implementation/release, the owner or release maintainer must replace every `RELEASE-INPUT-REQUIRED` value with an immutable source URL or repository/ref plus the SHA-256 of the exact patch JSON used. The input patch JSON files are committed under `assets/patches/<theme>.json`; generated modules in `./.web-kits` are not authoritative inputs. | Done | 
+The committed JSON files and their SHA-256 values are the authoritative rendering inputs. The manifest's immutable repository/ref identifies the commit that introduced the exact files, while `upstreamCatalog` records their upstream catalog origin. Builds never fetch provenance URLs; they read only the committed files and fail on a checksum mismatch. Generated modules in `./.web-kits` are not authoritative inputs.
 
 ### 4.2 Deterministic renderer recipe
 
@@ -127,7 +132,7 @@ The reproducibility requirement is **byte-identical generated WAVs in the pinned
 
 ### 4.3 Mapping validation
 
-The Section 9 mapping table is a release input. Build validation must:
+The Section 10 mapping table is an approved release input. Build validation must:
 
 - confirm every mapped patch sound exists in the exact pinned theme patch;
 - generate the corresponding WAV;
@@ -209,7 +214,7 @@ $player.PlaySync()
 
 ### 5.5 Playback failure notices
 
-All automatic lifecycle cue failures are silent. A Settings theme-preview attempt may show a short in-UI notice only for a synchronous spawn failure (`ENOENT`, `EACCES`, missing packaged player script, or missing WAV). A nonzero child close or device/server failure after successful spawn remains silent because it does not reliably identify whether the user heard audio.
+All automatic lifecycle cue failures are silent. A Settings theme-preview attempt may show a short in-UI notice for a launch failure: a pre-spawn validation failure (missing packaged player script or WAV), a synchronous `spawn()` throw, or the child's `error` event before successful launch (including `ENOENT` or `EACCES`). Node commonly reports missing executables asynchronously through `error`; this is still a launch failure. A nonzero child close or device/server failure after the child emits `spawn` remains silent because it does not reliably identify whether the user heard audio.
 
 ---
 
@@ -217,13 +222,16 @@ All automatic lifecycle cue failures are silent. A Settings theme-preview attemp
 
 ### 6.1 Terms
 
-- **Request:** `{ event, requestedAt, priority }`; no WAV path or theme is resolved until launch.
+- **Request:** `{ event, requestedAt, priority, themeOverride?, togglePolicy }`, where `togglePolicy` is `"launch"` by default or `"accepted"` only for an approved pre-save toggle-off confirmation. `themeOverride`, when present, is a validated built-in audio-theme identifier; no WAV path is resolved until launch.
 - **Playing:** a child has been spawned and has not emitted `error` or `close`.
 - **Pending:** the single queue slot containing at most one request.
 - **Launchable:** eligible under Section 2, config lookup, theme mapping, and asset existence.
 - **Coalesced:** an event was observed but intentionally does not create another audio request.
 
-Audio theme, event toggle, asset mapping, and package path are evaluated at **launch time**, not when a request enters the scheduler. A configuration change therefore affects a queued cue that has not started.
+Audio theme, event toggle, asset mapping, and package path are normally evaluated at **launch time**, not when a request enters the scheduler. A configuration change therefore affects a queued ordinary cue that has not started. Two explicit exceptions exist:
+
+1. A Settings preview request retains its validated `themeOverride`, so it previews the highlighted candidate even if that theme is not saved or the active theme changes while the request waits.
+2. A pre-save `settingsToggleOff` request may use `togglePolicy: "accepted"`. The caller must verify that `settingsToggleOff` is enabled when accepting the request; that snapshot remains valid if the subsequent save disables the toggle before launch. Mode/CI/SSH gating, mapping, and asset existence are still checked at launch.
 
 ### 6.2 Priorities and terminal outcomes
 
@@ -247,11 +255,17 @@ Priorities, highest first:
 ### 6.3 Request algorithm
 
 ```text
-request(event):
+request(event, options = {}):
+  if event is toolError and its toggle is disabled at request time:
+    discard without opening or extending a debounce window; return
   if event is toolError and now - toolErrorWindowStart < 1000 ms:
     mark event coalesced; return
   if event is toolError:
     toolErrorWindowStart = now
+
+  validate any themeOverride against the four built-in theme ids
+  if togglePolicy is "accepted":
+    require event === settingsToggleOff and verify it is enabled now
 
   if no Playing:
     launch(event) if launchable; otherwise discard
@@ -267,7 +281,7 @@ request(event):
 
 Clarifications:
 
-- A tool-error window begins when the first enabled `toolError` is accepted by the scheduler. A request exactly 1,000 ms after the anchor starts a new window; `< 1,000 ms` coalesces.
+- A tool-error window begins when the first enabled `toolError` is accepted by the scheduler. A disabled tool error neither opens nor extends a window. A request exactly 1,000 ms after the anchor starts a new window; `< 1,000 ms` coalesces.
 - A coalesced error does not create a later queued sound. “Every tool failure is recorded” means transient in-memory scheduler accounting only; it is not persisted or logged.
 - If no `Pending` exists, any request can become pending while another cue is playing. If a `Pending` exists, only a strictly higher-priority incoming request replaces it.
 - A newly arrived completion replaces any pending lower-priority request, but never kills the currently playing child. It launches after the current child closes, errors, or hits its watchdog.
@@ -372,10 +386,11 @@ Validation policy:
 | Unknown field/event | Preserve it during a valid write but ignore it at runtime. |
 | Wrong type for a known field | Use that field’s default; retain other valid known fields. |
 | Unknown theme | Use `core`; retain other valid values. |
-| Empty/malformed JSON, symlink, unreadable file | Use defaults; preserve the file; show one Settings-only notice when `/audio:config` opens. |
+| Empty/malformed JSON | Use defaults; do not overwrite merely by loading; show one Settings-only notice when `/audio:config` opens. An explicit user mutation may replace it as described below. |
+| Symlink or unreadable file | Use defaults; preserve the path; show one Settings-only notice. Reject Settings mutations until the user removes or repairs it. |
 | Version `1` | Use directly after field-level validation. |
-| Version `<1` | No historical schema exists; treat as malformed/default. |
-| Version `>1` | Treat as unsupported/default; never overwrite automatically. |
+| Version `<1` | No historical schema exists; treat as malformed/default. An explicit user mutation may replace it. |
+| Version `>1` | Treat as unsupported/default; preserve it and reject Settings mutations to prevent destructive downgrade. |
 
 No automatic migration exists in MVP. A later schema version must define an explicit migration before adding it to code.
 
@@ -383,8 +398,8 @@ No automatic migration exists in MVP. A later schema version must define an expl
 
 For every Settings mutation:
 
-1. Re-read the current valid on-disk configuration, if available.
-2. Merge only the mutation into that configuration; preserve unknown fields.
+1. Re-read and classify the on-disk path. For a valid version-1 file, merge only the mutation and preserve unknown fields. For a missing file, start from defaults. For malformed JSON or a version below 1, an explicit Settings mutation is authorization to replace the invalid content with validated defaults plus that mutation. For a symlink, unreadable file, or version above 1, reject the mutation and preserve the path.
+2. Validate the complete merged/replacement configuration before writing.
 3. Write JSON with a trailing newline to a unique temporary file in the same directory, mode `0600` on POSIX.
 4. Flush the temporary file, close it, then rename it over the target file.
 5. Best-effort flush the containing directory on POSIX.
@@ -424,7 +439,7 @@ Root options:
 |---|---|---|
 | Open `/audio:config` | No config write | `settingsRootEnter`, if enabled. |
 | Turn all sounds on | Set every known event toggle true; atomic save. | On successful save, `settingsToggleOn`. If already all on, no write/cue. |
-| Turn all sounds off | Request `settingsToggleOff`, then set every known event toggle false and atomic save. | The pre-save `settingsToggleOff` cue is the only cue. If already all off, no write/cue. |
+| Turn all sounds off | If `settingsToggleOff` is currently enabled, request it with `togglePolicy: "accepted"`; then set every known event toggle false and atomic save. | The pre-save `settingsToggleOff` cue is the only cue and remains eligible if queued until after the save. If already all off, no write/cue. |
 | Open individual editor | No config write | `settingsSubmenuEnter` only. |
 | Open theme selector | No config write | `settingsSubmenuEnter` only. |
 | Exit root | No additional save; mutations already save immediately | `settingsRootExit`, if enabled. |
@@ -452,13 +467,14 @@ settingsToggleOn, settingsToggleOff
 
 It does not include `settingsThemePreview`; that cue is controlled only by the theme selector and remains enabled by default.
 
-Enabling one event: save first, then play `settingsToggleOn` if that cue remains enabled. Disabling one event: request `settingsToggleOff` before save; if the save fails, revert state and show a Settings-only notice.
+Enabling one event: save first, then play `settingsToggleOn` if that cue remains enabled. Disabling one event: if `settingsToggleOff` is currently enabled, request it with `togglePolicy: "accepted"` before save; if the save fails, revert state and show a Settings-only notice. The accepted snapshot permits a queued toggle-off cue to launch after the save.
 
 ### 9.5 Theme selector and preview
 
 - Moving a highlighted theme is silent except for ordinary `settingsNavigate`.
 - Pressing **Enter** confirms the highlighted theme, atomically saves it, and emits **one** `settingsOptionSelect` cue using the newly selected audio theme.
-- Pressing **Space** previews the highlighted theme without saving and emits `settingsThemePreview` using that candidate theme.
+- Pressing **Space** previews the highlighted theme without saving and emits `settingsThemePreview` with the highlighted built-in theme as `themeOverride`.
+- The selector must display persistent helper text while open: **“Space preview • Enter save • Esc cancel”**. Equivalent keybinding-aware formatting is allowed, but the preview action must be explicitly discoverable.
 - Theme confirmation does not also emit `settingsThemePreview`; one Enter must never produce two sounds.
 - If `settingsThemePreview` is disabled, Space preview is silent; theme confirmation still saves and uses `settingsOptionSelect` if enabled.
 - Escape leaves the selector without changing the already confirmed theme.
@@ -504,7 +520,10 @@ Tests must assert exact request/start sequences for:
 6. Esc while idle or Settings UI is open: no abort request.
 7. Literal Esc followed by a non-aborted final assistant message: no abort request.
 8. Literal Esc followed by an aborted final assistant message: one abort request and no completion request.
-9. Configuration/theme mutation while a cue waits: launch uses the current configuration at launch time.
+9. Configuration/theme mutation while an ordinary cue waits: launch uses the current configuration at launch time.
+10. Previewing an unsaved candidate theme: the request retains that candidate and resolves its WAV at launch even when the active theme differs.
+11. A queued pre-save `settingsToggleOff` accepted while enabled remains launchable after the save disables all toggles.
+12. A disabled `toolError` does not open or extend the debounce window.
 
 ### 11.2 Configuration tests
 
@@ -512,7 +531,7 @@ Test missing, partial, malformed, unreadable, symlink, wrong-type, unknown-field
 
 ### 11.3 Asset and package tests
 
-1. Verify the patch manifest contains immutable source and SHA-256 values for every theme.
+1. Verify the patch manifest contains the immutable repository/ref provenance and SHA-256 value for every theme, and verify each committed patch against that checksum.
 2. Verify every generated WAV has RIFF/WAVE headers, mono 48 kHz PCM 16-bit format, expected path, and manifest SHA-256.
 3. Regenerate assets in pinned CI and require byte-identical output.
 4. Snapshot `npm pack --dry-run`; require code, WAVs, notices, PowerShell script, and package manifest, while excluding source-only artifacts not needed at runtime.
@@ -542,7 +561,7 @@ Tests must verify no runtime network call path exists, and player output never r
 ## 12. Implementation Plan
 
 1. **Release foundation** — create ESM npm package metadata, Pi manifest, compatibility checks, notices, README, and CI matrix.
-2. **Asset pipeline** — supply immutable patch manifest values, commit selected patch JSON, implement deterministic WAV generation, mapping validation, and artifact checksum tests.
+2. **Asset pipeline** — verify the committed immutable patch manifest and selected patch JSON, then implement deterministic WAV generation, mapping validation, and artifact checksum tests.
 3. **Core runtime** — implement config validation/atomic persistence, eligibility gate, scheduler state machine, package-relative asset resolver, and direct-child lifecycle handling.
 4. **Platform adapters** — implement and test macOS, Linux fallback, and Windows PowerShell contracts exactly as Section 5 specifies.
 5. **Pi integration** — implement lifecycle hooks, experimental abort listener/heuristic, and `/audio:config` state transitions.
@@ -550,20 +569,20 @@ Tests must verify no runtime network call path exists, and player output never r
 
 ---
 
-## 13. Owner Review Required
+## 13. Owner Approvals — Complete
 
-Approval or edits are required for:
+The following implementation inputs are approved and incorporated into the normative sections above:
 
 | Concern | Owner response |
 |---|---|
-| 1. **Asset provenance:** Fill the four immutable patch source and SHA-256 entries in `assets/patches/manifest.json`. | Aproved |
-| 2. **License:** Approve MIT for package code/generated WAVs or supply another license. | Approved |
-| 3. **Abort scope:** Approve the experimental, literal-Escape-only heuristic and its intentional false-negative behavior. | Approved |
-| 4. **Mode policy:** Approve the exact CI and SSH suppression variable lists. | Approved |
-| 5. **Scheduler:** Approve the single-pending-slot queue, 2-second expiry, watchdog, and coalesced one-second tool-error groups. | Approved |
-| 6. **Settings behavior:** Approve Space-to-preview and Enter-to-save as separate one-cue actions. | "Space-to-preview" is approved as long as we provide helper text somewhere in the UI to let the user know about this function." |
-| 7. **Compatibility:** Approve the Pi/Node ranges and platform release matrix. | Approved |
-| 8. **Config policy:** Approve first-write timing, validation/migration behavior, atomic write procedure, and last-writer-wins concurrency policy. | Approved |
+| 1. **Asset provenance:** Fill the four immutable patch source and SHA-256 entries in `assets/patches/manifest.json`. | Approved and materialized in the repository manifest. |
+| 2. **License:** Approve MIT for package code/generated WAVs or supply another license. | Approved; MIT is normative in Section 3. |
+| 3. **Abort scope:** Approve the experimental, literal-Escape-only heuristic and its intentional false-negative behavior. | Approved. |
+| 4. **Mode policy:** Approve the exact CI and SSH suppression variable lists. | Approved. |
+| 5. **Scheduler:** Approve the single-pending-slot queue, 2-second expiry, watchdog, and coalesced one-second tool-error groups. | Approved. |
+| 6. **Settings behavior:** Approve Space-to-preview and Enter-to-save as separate one-cue actions. | Approved with the required in-selector helper text specified in Section 9.5. |
+| 7. **Compatibility:** Approve the Pi/Node ranges and platform release matrix. | Approved. |
+| 8. **Config policy:** Approve first-write timing, validation/migration behavior, atomic write procedure, and last-writer-wins concurrency policy. | Approved. |
 
 ---
 
