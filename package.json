@@ -20,7 +20,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:acceptance": "vitest run tests/privacy.test.ts tests/package-install.test.ts tests/platform-adapters.test.ts"
   },
   "keywords": [
     "pi-package"
@@ -39,7 +40,7 @@
     "@earendil-works/pi-tui": "0.80.6",
     "@types/node": "^20.19.33",
     "@web-kits/audio": "0.1.0",
-    "ajv": "8.17.1",
+    "ajv": "8.20.0",
     "eslint": "9.39.2",
     "node-web-audio-api": "1.0.9",
     "prettier": "3.9.0",

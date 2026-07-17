@@ -48,7 +48,8 @@ Settings theme preview and lifecycle cue on required platforms:
 - macOS 14+ Intel: best effort when available (not release-blocking)
 
 WSL is explicitly unsupported. These rows remain a `human-gate`; automated agents must not claim
-that a cue was heard.
+that a cue was heard. The exact automated-to-manual evidence map and human test record requirements
+are maintained in [`docs/ACCEPTANCE_TRACEABILITY.md`](docs/ACCEPTANCE_TRACEABILITY.md).
 
 ## License and notices
 
