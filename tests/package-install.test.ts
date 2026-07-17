@@ -66,9 +66,28 @@ describe("published package", () => {
         "scripts/play-wav.ps1",
       ]),
     );
+    const wavManifestSource = await readFile(
+      new URL("../assets/wav/manifest.json", import.meta.url),
+      "utf8",
+    );
+    const wavManifest: unknown = JSON.parse(wavManifestSource);
+    if (
+      typeof wavManifest !== "object" ||
+      wavManifest === null ||
+      !("files" in wavManifest) ||
+      typeof wavManifest.files !== "object" ||
+      wavManifest.files === null
+    ) {
+      throw new TypeError("WAV manifest must contain a files object");
+    }
+    expect(paths).toEqual(
+      expect.arrayContaining(["assets/wav/manifest.json", ...Object.keys(wavManifest.files)]),
+    );
+
     expect(paths.some((path) => path.startsWith(".web-kits/"))).toBe(false);
     expect(paths.some((path) => path.startsWith("assets/patches/"))).toBe(false);
     expect(paths.some((path) => path.startsWith("tests/"))).toBe(false);
+    expect(paths.some((path) => path.startsWith("scripts/assets/"))).toBe(false);
 
     execFileSync("npm", ["init", "--yes"], { cwd: directory, stdio: "ignore" });
     execFileSync(
