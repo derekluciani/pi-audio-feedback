@@ -184,6 +184,11 @@ export class AudioScheduler {
     return this.#pending?.event ?? null;
   }
 
+  /** Narrow resource state used by assembled acceptance tests. */
+  get hasActiveWatchdog(): boolean {
+    return this.#playing?.watchdog !== null && this.#playing?.watchdog !== undefined;
+  }
+
   async request(event: unknown, options: unknown = {}): Promise<SchedulerRequestResult> {
     if (this.#shutdown) return "shutdown";
     const now = this.#options.clock.now();

@@ -6,20 +6,20 @@ by a person; automated agents skip it and must not report that a cue was heard.
 
 ## §11.1 Deterministic scheduler
 
-| Row                                                                  | Automated evidence                                                                                                                                                                                                                            |
-| -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1. zero-tool `agentStart` → `agentSettled`                           | `tests/scheduler.test.ts` — `runs a normal zero-tool prompt as agentStart then agentSettled`; assembled hooks: `tests/extension.test.ts` — `registers the minimum public hook surface and runs exact normal lifecycle sequence`               |
-| 2. tool failures at 0/999/1000 ms                                    | `tests/scheduler.test.ts` — `coalesces 0/999 and opens a new tool-error window at exactly 1000ms`                                                                                                                                             |
-| 3. completion while navigation plays                                 | `tests/scheduler.test.ts` — `replaces pending navigation or tool error with completion without killing playback` (navigation parameter)                                                                                                       |
-| 4. completion replaces pending tool error                            | Same parameterized test (tool-error parameter)                                                                                                                                                                                                |
-| 5. retry/compaction/steering/follow-up starts; final completion only | `tests/scheduler.test.ts` — `drives exact retry, auto-compaction, steering, follow-up, and final sequences`; assembled hooks: `tests/extension.test.ts` — `observes tool errors promptly without mutation and emits every low-level start`    |
-| 6. Esc while idle/Settings                                           | `tests/scheduler.test.ts` — `ignores literal Escape while idle/settings and for non-aborted outcomes`                                                                                                                                         |
-| 7. Esc plus non-aborted message                                      | Same test                                                                                                                                                                                                                                     |
-| 8. Esc plus aborted message gives abort only                         | `tests/scheduler.test.ts` — `requests one abort and no completion only for literal-Escape confirmed abort`; assembled hooks: `tests/extension.test.ts` — `requires same-generation literal Escape plus exact final aborted assistant outcome` |
-| 9. queued ordinary cue uses current config/theme                     | `tests/scheduler.test.ts` — `uses current config/theme at launch and retains a validated preview candidate`                                                                                                                                   |
-| 10. unsaved preview candidate retained                               | Same test; eligibility boundary: `tests/eligibility.test.ts` — `retains only a validated Settings preview candidate`                                                                                                                          |
-| 11. accepted toggle-off survives disabling all                       | `tests/scheduler.test.ts` — `requires the opaque accepted proof and survives disabling all toggles`                                                                                                                                           |
-| 12. disabled tool error does not affect debounce                     | `tests/scheduler.test.ts` — `disabled errors neither open nor extend the debounce window`                                                                                                                                                     |
+| Row                                                                  | Automated evidence                                                                                                                                                                                                                                             |
+| -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1. zero-tool `agentStart` → `agentSettled`                           | `tests/scheduler.test.ts` — `runs a normal zero-tool prompt as agentStart then agentSettled`; assembled hooks: `tests/extension.test.ts` — `registers the minimum public hook surface and runs exact normal lifecycle sequence`                                |
+| 2. tool failures at 0/999/1000 ms                                    | `tests/scheduler.test.ts` — `coalesces 0/999 and opens a new tool-error window at exactly 1000ms`                                                                                                                                                              |
+| 3. completion while navigation plays                                 | `tests/scheduler.test.ts` — `replaces pending navigation or tool error with completion without killing playback` (navigation parameter)                                                                                                                        |
+| 4. completion replaces pending tool error                            | Same parameterized test (tool-error parameter)                                                                                                                                                                                                                 |
+| 5. retry/compaction/steering/follow-up starts; final completion only | `tests/scheduler.test.ts` — `drives exact retry, auto-compaction, steering, follow-up, and final sequences`; assembled hooks: `tests/extension.test.ts` — `observes tool errors promptly without mutation and emits every low-level start`                     |
+| 6. Esc while idle/Settings                                           | Idle state: `tests/scheduler.test.ts` — `ignores literal Escape while idle/settings and for non-aborted outcomes`; real Settings/TUI boundary: `tests/privacy.test.ts` — `opens Settings while idle and treats raw literal Escape as additive, never an abort` |
+| 7. Esc plus non-aborted message                                      | Same test                                                                                                                                                                                                                                                      |
+| 8. Esc plus aborted message gives abort only                         | `tests/scheduler.test.ts` — `requests one abort and no completion only for literal-Escape confirmed abort`; assembled hooks: `tests/extension.test.ts` — `requires same-generation literal Escape plus exact final aborted assistant outcome`                  |
+| 9. queued ordinary cue uses current config/theme                     | `tests/scheduler.test.ts` — `uses current config/theme at launch and retains a validated preview candidate`                                                                                                                                                    |
+| 10. unsaved preview candidate retained                               | Same test; eligibility boundary: `tests/eligibility.test.ts` — `retains only a validated Settings preview candidate`                                                                                                                                           |
+| 11. accepted toggle-off survives disabling all                       | `tests/scheduler.test.ts` — `requires the opaque accepted proof and survives disabling all toggles`                                                                                                                                                            |
+| 12. disabled tool error does not affect debounce                     | `tests/scheduler.test.ts` — `disabled errors neither open nor extend the debounce window`                                                                                                                                                                      |
 
 The complete §6.4 state table is additionally covered by
 `implements every PRD 6.4 queue row and retains older equal priority`.
@@ -75,29 +75,29 @@ audibility.
 
 ## §11.5 Privacy, output, and resource containment
 
-- Static closed runtime graph and forbidden `fetch`/HTTP/HTTPS/net/TLS/DNS/datagram checks:
-  `tests/privacy.test.ts` —
-  `has a closed production import graph with no runtime network primitive`.
-- Dynamic load, session, Settings, playback, and shutdown with a failing `fetch` sentinel:
-  `loads, runs lifecycle playback, opens Settings, and shuts down offline and silently`.
-- Success/nonzero output and exact ignored player stdio: privacy integration plus
+- Complete static runtime-source traversal: `tests/privacy.test.ts` parses every extension module
+  with the TypeScript compiler AST and inspects imports, exports, dynamic imports, calls,
+  constructors, property bindings, `require`/`createRequire`, process loader bindings, and
+  eval/Function escapes. It rejects HTTP/HTTPS/net/TLS/DNS/datagram modules and URL imports. This is
+  parser-based, not regex.
+- Dynamic offline boundary: the same test hoists public Pi/TUI host mocks before importing the
+  extension (so Node 20 does not load Pi's unrelated undici path), and installs throwing/counting
+  `fetch`, `node:http`, `node:https`, `node:net`, and `node:dns` sentinels. The separate
+  `tests/package-install.test.ts` job retains real minimum-Pi/package-loader evidence.
+- The assembled production-extension matrix runs session hooks for successful `close(0)`, nonzero
+  `close(7)`, synchronous launch throw, and asynchronous pre-spawn `error`; runs malformed real
+  configuration and missing packaged assets through session/Settings; and reaches an injected rename
+  failure through a real `ConfigurationStore` mutation from the Settings component/command.
+- Every assembled case captures `console.log/info/warn/error/debug/trace`, stdout, stderr, and
+  unhandled promise rejections and asserts no output/rejection. Dynamic network counters remain
+  zero.
+- After player error/close, Settings close, and shutdown, assembled tests assert the scheduler's
+  tracked-child/pending/watchdog state, injected timer map, all child event listeners, raw-terminal
+  listener/disposer, and Settings custom-component singleton are clean (or remain installed only for
+  the live session, as required by PRD §7.2).
+- Exact ignored player stdio and platform argument contracts remain independently covered by
   `tests/platform-adapters.test.ts` —
   `uses ignored stdio so success, errors, and nonzero closes cannot leak output`.
-- Spawn error, missing asset, malformed config: `tests/privacy.test.ts` —
-  `contains malformed config, missing assets, and asynchronous spawn errors`; synchronous spawn
-  throw and preview stage isolation are covered by scheduler
-  `removes a child ... and continues after launch failure` and
-  `notices only approved preview pre-spawn failures and stays silent post-spawn`.
-- Failed Settings write stays contained and reverts: `tests/settings.test.ts` —
-  `saves individual toggles in the required cue order and reverts failed writes`; filesystem
-  write/rename failures are covered in `tests/config.test.ts`.
-- Handler promises and expected listener/load failures: `tests/extension.test.ts` —
-  `contains malformed-config, listener, and launch failures without output or rejection`.
-- No leaked timer/listener/child after normal/error/watchdog/shutdown: scheduler tests
-  `incrementally cleans synchronous listener settlement and event orderings`,
-  `arms duration+2000 watchdog ...`, and `cleans active listeners and timers ...`; assembled
-  extension test
-  `installs raw input only in TUI and idempotently cleans listeners, timers, and children`.
 
 ## Clean-checkout release commands
 
