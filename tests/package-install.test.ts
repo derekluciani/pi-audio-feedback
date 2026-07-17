@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -107,5 +107,47 @@ describe("published package", () => {
       "utf8",
     );
     expect(installedManifest).toContain('"name": "pi-audio-feedback"');
+
+    const suppliedPiDirectory = join(
+      directory,
+      "node_modules",
+      "@earendil-works",
+      "pi-coding-agent",
+    );
+    await mkdir(suppliedPiDirectory, { recursive: true });
+    await writeFile(
+      join(suppliedPiDirectory, "package.json"),
+      JSON.stringify({
+        name: "@earendil-works/pi-coding-agent",
+        type: "module",
+        exports: "./index.js",
+      }),
+      "utf8",
+    );
+    await writeFile(
+      join(suppliedPiDirectory, "index.js"),
+      "export const getAgentDir = () => process.env.PI_TEST_AGENT_DIR;\n",
+      "utf8",
+    );
+    const runnerPath = join(directory, "load-installed-extension.mjs");
+    await writeFile(
+      runnerPath,
+      `
+        import audioFeedbackExtension from "pi-audio-feedback";
+        const registrations = [];
+        audioFeedbackExtension({ on: (event, handler) => registrations.push({ event, handler }) });
+        if (registrations.length !== 1 || registrations[0].event !== "session_start") {
+          throw new TypeError("Installed extension did not register session_start");
+        }
+        await registrations[0].handler({ reason: "startup" }, {});
+      `,
+      "utf8",
+    );
+    const tsxCli = join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+    execFileSync(process.execPath, [tsxCli, runnerPath], {
+      cwd: directory,
+      env: { ...process.env, PI_TEST_AGENT_DIR: join(directory, "agent") },
+      stdio: "pipe",
+    });
   });
 });

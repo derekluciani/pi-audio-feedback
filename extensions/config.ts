@@ -1,54 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, lstat, mkdir, open, rename, unlink } from "node:fs/promises";
-import { createRequire } from "node:module";
+import { lstat, mkdir, open, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
-
-// Resolve the documented helper without evaluating Pi's root entry point, which eagerly
-// loads its full CLI and Node-version-sensitive HTTP transitives. Pi 0.80.6 does not export
-// its side-effect-light config subpath, so resolve it beside the public entry point.
-const require = createRequire(import.meta.url);
-let piConfigPath: string | undefined;
-for (const modulesDirectory of require.resolve.paths("@earendil-works/pi-coding-agent") ?? []) {
-  const candidate = join(
-    modulesDirectory,
-    "@earendil-works",
-    "pi-coding-agent",
-    "dist",
-    "config.js",
-  );
-  try {
-    await access(candidate, constants.R_OK);
-    piConfigPath = candidate;
-    break;
-  } catch {
-    // Continue through Node's normal ancestor node_modules search locations.
-  }
-}
-if (piConfigPath === undefined) {
-  throw new TypeError("The compatible Pi config module is unavailable");
-}
-const piConfigModule: unknown = await import(pathToFileURL(piConfigPath).href);
-function hasGetAgentDir(value: unknown): value is { getAgentDir(): unknown } {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "getAgentDir" in value &&
-    typeof value.getAgentDir === "function"
-  );
-}
-
-if (!hasGetAgentDir(piConfigModule)) {
-  throw new TypeError("The compatible Pi getAgentDir export is unavailable");
-}
-const getAgentDir = (): string => {
-  const directory = piConfigModule.getAgentDir();
-  if (typeof directory !== "string") {
-    throw new TypeError("Pi getAgentDir returned an invalid path");
-  }
-  return directory;
-};
 
 export const CONFIG_FILE_NAME = "pi-audio-feedback.json";
 export const CONFIG_VERSION = 1 as const;
@@ -126,7 +79,8 @@ export type MutationResult =
   | { readonly ok: true; readonly configuration: AudioFeedbackConfiguration }
   | {
       readonly ok: false;
-      readonly reason: "invalid-mutation" | "not-writable" | "write-failed";
+      readonly reason:
+        "invalid-mutation" | "not-writable" | "configuration-too-large" | "write-failed";
     };
 
 export interface ConfigurationStats {
@@ -183,6 +137,7 @@ interface ClassifiedConfiguration {
 
 export interface ConfigurationStoreOptions {
   readonly path?: string;
+  readonly agentDirectory?: string;
   readonly fileSystem?: ConfigurationFileSystem;
   readonly platform?: NodeJS.Platform;
   readonly uniqueId?: () => string;
@@ -366,8 +321,8 @@ function applyMutation(
   };
 }
 
-/** Resolves the global configuration path using Pi's helper, never the project cwd. */
-export function getConfigurationPath(agentDirectory: string = getAgentDir()): string {
+/** Resolves the global configuration path from an explicitly supplied Pi agent directory. */
+export function getConfigurationPath(agentDirectory: string): string {
   return join(agentDirectory, CONFIG_FILE_NAME);
 }
 
@@ -380,8 +335,14 @@ export class ConfigurationStore {
   #current: ConfigurationSnapshot;
   #mutationQueue: Promise<void> = Promise.resolve();
 
-  constructor(options: ConfigurationStoreOptions = {}) {
-    this.path = options.path ?? getConfigurationPath();
+  constructor(options: ConfigurationStoreOptions) {
+    if (options.path !== undefined) {
+      this.path = options.path;
+    } else if (options.agentDirectory !== undefined) {
+      this.path = getConfigurationPath(options.agentDirectory);
+    } else {
+      throw new TypeError("ConfigurationStore requires a path or agent directory");
+    }
     this.#fileSystem = options.fileSystem ?? nodeFileSystem;
     this.#platform = options.platform ?? process.platform;
     this.#uniqueId = options.uniqueId ?? randomUUID;
@@ -518,6 +479,9 @@ export class ConfigurationStore {
 
     const merged = applyMutation(disk, validatedMutation);
     const content = `${JSON.stringify(merged.persisted, null, 2)}\n`;
+    if (Buffer.byteLength(content, "utf8") > CONFIG_MAX_BYTES) {
+      return { ok: false, reason: "configuration-too-large" };
+    }
     const directory = dirname(this.path);
     const temporaryPath = join(directory, `.${CONFIG_FILE_NAME}.${this.#uniqueId()}.tmp`);
     let handle: ConfigurationFileHandle | undefined;

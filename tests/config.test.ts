@@ -4,6 +4,7 @@ import {
   mkdtemp,
   open,
   readFile,
+  readdir,
   rename,
   rm,
   stat,
@@ -310,6 +311,36 @@ describe("atomic configuration mutations", () => {
       futureCue: "retained",
     });
     expect(Object.keys(store.current.configuration.events)).toEqual(AUDIO_EVENTS);
+  });
+
+  it("rejects preserved output that pretty-prints beyond the readable byte bound", async () => {
+    const path = await temporaryConfigPath();
+    const unknownRichConfiguration = {
+      version: 1,
+      theme: "retro",
+      events: { appStart: false },
+      futureValues: Array.from({ length: 10_000 }, (_, index) => index),
+    };
+    const source = `${JSON.stringify(unknownRichConfiguration)}\n`;
+    const expanded = `${JSON.stringify(unknownRichConfiguration, null, 2)}\n`;
+    expect(Buffer.byteLength(source, "utf8")).toBeLessThanOrEqual(CONFIG_MAX_BYTES);
+    expect(Buffer.byteLength(expanded, "utf8")).toBeGreaterThan(CONFIG_MAX_BYTES);
+    await writeConfig(path, source);
+    const store = new ConfigurationStore({ path });
+    await store.load();
+
+    expect(await store.mutate({ theme: "soft" })).toEqual({
+      ok: false,
+      reason: "configuration-too-large",
+    });
+    expect(store.current.configuration.theme).toBe("retro");
+    expect(await readFile(path, "utf8")).toBe(source);
+    expect(await readdir(join(path, ".."))).toEqual([CONFIG_FILE_NAME]);
+
+    const reloaded = await new ConfigurationStore({ path }).load();
+    expect(reloaded.classification).toBe("valid");
+    expect(reloaded.configuration.theme).toBe("retro");
+    expect(reloaded.configuration.events.appStart).toBe(false);
   });
 
   it("re-reads before every serialized mutation for completed last-writer-wins behavior", async () => {
