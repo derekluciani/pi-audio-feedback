@@ -5,10 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
+vi.mock("@earendil-works/pi-coding-agent", () => ({
+  getAgentDir: (): string => "/supplied/pi-agent",
+}));
+
 import type { AudioEvent, AudioTheme } from "../extensions/audio-catalog.js";
-import { LITERAL_ESCAPE_SEQUENCE, registerAudioFeedbackExtension } from "../extensions/index.js";
 import type { LaunchableAudioCue } from "../extensions/eligibility.js";
 import type { SchedulerChild } from "../extensions/scheduler.js";
+
+const { LITERAL_ESCAPE_SEQUENCE, registerAudioFeedbackExtension } =
+  await import("../extensions/index.js");
 
 class FakeChild extends EventEmitter implements SchedulerChild {
   readonly kill = vi.fn(() => true);
