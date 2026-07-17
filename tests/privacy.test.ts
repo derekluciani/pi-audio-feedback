@@ -166,6 +166,28 @@ function staticString(expression: ts.Expression): string | null {
   return null;
 }
 
+function isChildProcessSpecifier(specifier: string): boolean {
+  return (
+    specifier === "node:child_process" ||
+    specifier.startsWith("node:child_process/") ||
+    specifier === "child_process" ||
+    specifier.startsWith("child_process/")
+  );
+}
+
+function assertChildProcessModuleBoundary(file: string, node: ts.Node, value: ts.Expression): void {
+  if (!ts.isStringLiteralLike(value) || !isChildProcessSpecifier(value.text)) return;
+  const approvedImport =
+    ts.isImportDeclaration(node) &&
+    normalize(file).endsWith("/extensions/platform-adapters.ts") &&
+    value.text === "node:child_process";
+  if (!approvedImport) {
+    throw new Error(
+      `${file}: child_process modules are restricted to platform-adapters.ts's approved import`,
+    );
+  }
+}
+
 function assertAllowedModuleSpecifier(
   file: string,
   extensionRoot: string,
@@ -334,11 +356,34 @@ function assertNoRuntimeCapability(
   assertPlatformChildProcessContract(file, source);
 
   const visit = (node: ts.Node): void => {
+    // Inspect module-bearing syntax at the specifier boundary before the general allowlist. This
+    // prevents child_process from being laundered by a re-export or type/import syntax that does
+    // not create an ImportDeclaration.
+    let moduleSpecifier: ts.Expression | undefined;
     if (
       (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
       node.moduleSpecifier !== undefined
     ) {
-      assertAllowedModuleSpecifier(file, extensionRoot, publishedFiles, node.moduleSpecifier);
+      moduleSpecifier = node.moduleSpecifier;
+    } else if (
+      ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference)
+    ) {
+      moduleSpecifier = node.moduleReference.expression;
+    } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
+      moduleSpecifier = node.argument.literal;
+    } else if (
+      ts.isCallExpression(node) &&
+      (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+        (ts.isIdentifier(node.expression) && node.expression.text === "require"))
+    ) {
+      moduleSpecifier = node.arguments[0];
+    } else if (ts.isModuleDeclaration(node) && ts.isStringLiteral(node.name)) {
+      moduleSpecifier = node.name;
+    }
+    if (moduleSpecifier !== undefined) {
+      assertChildProcessModuleBoundary(file, node, moduleSpecifier);
+      assertAllowedModuleSpecifier(file, extensionRoot, publishedFiles, moduleSpecifier);
     }
     if (ts.isImportEqualsDeclaration(node)) {
       throw new Error(`${file}: import-equals is forbidden`);
@@ -388,6 +433,35 @@ function assertNoRuntimeCapability(
 
 function parseFixture(name: string, sourceText: string): ts.SourceFile {
   return ts.createSourceFile(name, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+}
+
+async function loadPublishedExtensionGraph(extensionRoot: string): Promise<Map<string, string>> {
+  const collectTypeScriptFiles = async (directory: string): Promise<string[]> => {
+    const entries = await readdir(directory, { withFileTypes: true });
+    const nested = await Promise.all(
+      entries.map(async (entry) => {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) return collectTypeScriptFiles(path);
+        return entry.isFile() && entry.name.endsWith(".ts") ? [path] : [];
+      }),
+    );
+    return nested.flat();
+  };
+  const graph = new Map<string, string>();
+  for (const file of (await collectTypeScriptFiles(extensionRoot)).sort()) {
+    graph.set(file, await nodeFileSystem.readFile(file, "utf8"));
+  }
+  return graph;
+}
+
+function assertPublishedExtensionGraph(
+  extensionRoot: string,
+  publishedSource: ReadonlyMap<string, string>,
+): void {
+  const publishedFiles = new Set(publishedSource.keys());
+  for (const [file, sourceText] of publishedSource) {
+    assertNoRuntimeCapability(file, parseFixture(file, sourceText), extensionRoot, publishedFiles);
+  }
 }
 
 function installContainmentSentinels(): {
@@ -592,18 +666,8 @@ afterEach(async () => {
 describe("runtime privacy and output containment", () => {
   it("allows only the closed published runtime graph and rejects loader/network escapes", async () => {
     const extensionRoot = fileURLToPath(new URL("../extensions", import.meta.url));
-    const collectTypeScriptFiles = async (directory: string): Promise<string[]> => {
-      const entries = await readdir(directory, { withFileTypes: true });
-      const nested = await Promise.all(
-        entries.map(async (entry) => {
-          const path = join(directory, entry.name);
-          if (entry.isDirectory()) return collectTypeScriptFiles(path);
-          return entry.isFile() && entry.name.endsWith(".ts") ? [path] : [];
-        }),
-      );
-      return nested.flat();
-    };
-    const files = (await collectTypeScriptFiles(extensionRoot)).sort();
+    const publishedSource = await loadPublishedExtensionGraph(extensionRoot);
+    const files = [...publishedSource.keys()];
     expect(files.map((file) => file.slice(extensionRoot.length + 1))).toEqual([
       "audio-catalog.ts",
       "config.ts",
@@ -615,17 +679,7 @@ describe("runtime privacy and output containment", () => {
       "terminal-outcomes.ts",
     ]);
     const publishedFiles = new Set(files);
-    const publishedSource = new Map<string, string>();
-    for (const file of files) {
-      const sourceText = await nodeFileSystem.readFile(file, "utf8");
-      publishedSource.set(file, sourceText);
-      assertNoRuntimeCapability(
-        file,
-        parseFixture(file, sourceText),
-        extensionRoot,
-        publishedFiles,
-      );
-    }
+    assertPublishedExtensionGraph(extensionRoot, publishedSource);
 
     const adversarialFixtures = [
       'import * as transport from "node:http"; transport.get("x")',
@@ -646,6 +700,10 @@ describe("runtime privacy and output containment", () => {
       'const Wrapped = new Proxy(Function, {}); new Wrapped("source")',
       'WebAssembly.instantiateStreaming(fetch("module.wasm"))',
       'void import("node:http")',
+      'export * from "node:child_process"',
+      'export { spawn as escapedSpawn } from "child_process"',
+      'import child = require("node:child_process")',
+      'type Spawn = typeof import("node:child_process").spawn',
       'const load = require; load("node:http")',
       'const cr = module["create" + "Require"]; cr(import.meta.url)',
       ...["node:http2", "node:tls", "node:dns", "node:dns/promises", "node:dgram"].map(
@@ -707,6 +765,43 @@ describe("runtime privacy and output containment", () => {
           publishedFiles,
         );
       }).toThrow();
+    }
+  });
+
+  it("rejects multi-file child_process re-export laundering across the published graph", async () => {
+    const extensionRoot = fileURLToPath(new URL("../extensions", import.meta.url));
+    const publishedSource = await loadPublishedExtensionGraph(extensionRoot);
+    const platformAdapterPath = join(extensionRoot, "platform-adapters.ts");
+    const importerPath = join(extensionRoot, "index.ts");
+    const platformAdapterSource = publishedSource.get(platformAdapterPath);
+    const importerSource = publishedSource.get(importerPath);
+    expect(platformAdapterSource).toBeDefined();
+    expect(importerSource).toBeDefined();
+    if (platformAdapterSource === undefined || importerSource === undefined) {
+      throw new Error("Published multi-file fixture sources are missing");
+    }
+
+    const launderingVariants = [
+      { reExport: 'export { spawn } from "node:child_process";', binding: "spawn" },
+      {
+        reExport: 'export { spawn as escapedSpawn } from "node:child_process";',
+        binding: "escapedSpawn",
+      },
+      { reExport: 'export * from "node:child_process";', binding: "spawn" },
+      { reExport: "export { nodeSpawn as escapedSpawn };", binding: "escapedSpawn" },
+    ];
+    for (const { reExport, binding } of launderingVariants) {
+      const mutation = new Map(publishedSource);
+      mutation.set(platformAdapterPath, `${platformAdapterSource}\n${reExport}`);
+      mutation.set(
+        importerPath,
+        `${importerSource}\nimport { ${binding} } from "./platform-adapters.js";\nexport const dormantNetworkLaunch = () => ${binding}("curl", ["https://example.invalid"], {});`,
+      );
+      expect(() => {
+        assertPublishedExtensionGraph(extensionRoot, mutation);
+      }, `analyzer accepted multi-file child_process laundering: ${reExport}`).toThrow(
+        /child_process|imported nodeSpawn/u,
+      );
     }
   });
 

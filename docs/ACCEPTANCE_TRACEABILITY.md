@@ -87,13 +87,18 @@ audibility.
   `freeze`, `fromEntries`, and `keys`. Adversarial fixtures cover aliases/destructuring,
   concatenated keys, Reflect get/apply, Object descriptors, indirect eval/Function, Proxy, dynamic
   loaders, and every mocked network built-in.
-- Closed subprocess contract: the same analyzer permits `node:child_process` only in the published
-  `extensions/platform-adapters.ts`, with exactly the named `spawn as nodeSpawn` import and
-  type-only `SpawnOptions`. The imported binding is restricted to `selectPlatformPlayer`'s default
-  injected `SpawnPlayer`; all four boundary calls and common options are AST-matched to PRD §5's
-  exact `afplay`, `paplay`, `aplay`, and `powershell.exe` executable/argument contracts. Mutations
-  adding direct or aliased `curl`, `exec`/`execFile`/`fork`, a dynamic executable, generic spawn
-  export, changed arguments, inherited stdio, or shell execution must fail through that analyzer.
+- Closed subprocess contract: before applying the general module allowlist, the same analyzer
+  inspects import declarations, named and star re-exports, import-equals, import types, dynamic
+  imports, `require()` calls, and string-named module declarations in every published extension
+  module. Every bare, `node:` or subpath `child_process` reference is rejected except the exact
+  named `spawn as nodeSpawn` plus type-only `SpawnOptions` import in
+  `extensions/platform-adapters.ts`; direct re-exports are never allowed. The imported value binding
+  may occur only in that import and as `selectPlatformPlayer`'s default `SpawnPlayer` initializer,
+  so local exports, exported assignments, aliases, namespace imports, and other uses fail. All four
+  boundary calls and common options are AST-matched to PRD §5's exact `afplay`, `paplay`, `aplay`,
+  and `powershell.exe` executable/argument contracts. Single-file mutations and published-graph
+  two-file mutations (direct, renamed, star, and imported-binding re-exports plus a relative
+  importer's dormant `curl` launch) must fail through the acceptance analyzer.
 - Dynamic offline boundary: before production extension import, the same test hoists throwing,
   counting mocks for global `fetch` and the entry APIs of `node:http`, `node:https`, `node:http2`,
   `node:net`, `node:tls`, `node:dns`, `node:dns/promises`, and `node:dgram`. The separate
