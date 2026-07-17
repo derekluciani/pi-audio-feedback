@@ -15,3 +15,5 @@ export default function audioFeedbackExtension(pi: ExtensionAPI): void {
 
 export * from "./audio-catalog.js";
 export * from "./eligibility.js";
+
+export * from "./scheduler.js";
