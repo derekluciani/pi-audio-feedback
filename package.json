@@ -13,6 +13,9 @@
     "README.md"
   ],
   "scripts": {
+    "assets:generate": "tsx scripts/assets/generate.ts",
+    "assets:verify": "tsx scripts/assets/verify.ts",
+    "assets:verify:reproduce": "tsx scripts/assets/verify-reproduction.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -33,8 +36,12 @@
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.80.6",
     "@types/node": "^20.19.33",
+    "@web-kits/audio": "0.1.0",
+    "ajv": "8.17.1",
     "eslint": "9.39.2",
+    "node-web-audio-api": "1.0.9",
     "prettier": "3.9.0",
+    "tsx": "4.20.6",
     "typescript": "5.9.3",
     "typescript-eslint": "8.54.0",
     "vitest": "3.2.7"

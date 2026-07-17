@@ -1,0 +1,90 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`deterministic asset pipeline > contains every approved event-to-theme mapping 1`] = `
+{
+  "agentAborted": {
+    "core": "warning",
+    "organic": "warning",
+    "retro": "warning",
+    "soft": "warning",
+  },
+  "agentSettled": {
+    "core": "notification",
+    "organic": "notification",
+    "retro": "notification",
+    "soft": "notification",
+  },
+  "agentStart": {
+    "core": "copy",
+    "organic": "copy",
+    "retro": "copy",
+    "soft": "copy",
+  },
+  "appStart": {
+    "core": "success",
+    "organic": "success",
+    "retro": "success",
+    "soft": "success",
+  },
+  "settingsNavigate": {
+    "core": "deselect",
+    "organic": "deselect",
+    "retro": "deselect",
+    "soft": "hover",
+  },
+  "settingsOptionSelect": {
+    "core": "select",
+    "organic": "select",
+    "retro": "select",
+    "soft": "select",
+  },
+  "settingsRootEnter": {
+    "core": "modal-open",
+    "organic": "page-enter",
+    "retro": "page-enter",
+    "soft": "page-enter",
+  },
+  "settingsRootExit": {
+    "core": "modal-close",
+    "organic": "page-exit",
+    "retro": "page-exit",
+    "soft": "delete",
+  },
+  "settingsSubmenuEnter": {
+    "core": "dropdown-open",
+    "organic": "expand",
+    "retro": "expand",
+    "soft": "tab-switch",
+  },
+  "settingsSubmenuExit": {
+    "core": "dropdown-close",
+    "organic": "collapse",
+    "retro": "collapse",
+    "soft": "undo",
+  },
+  "settingsThemePreview": {
+    "core": "notification",
+    "organic": "notification",
+    "retro": "notification",
+    "soft": "notification",
+  },
+  "settingsToggleOff": {
+    "core": "toggle-off",
+    "organic": "toggle-off",
+    "retro": "toggle-off",
+    "soft": "toggle-off",
+  },
+  "settingsToggleOn": {
+    "core": "toggle-on",
+    "organic": "toggle-on",
+    "retro": "toggle-on",
+    "soft": "toggle-on",
+  },
+  "toolError": {
+    "core": "delete",
+    "organic": "error",
+    "retro": "error",
+    "soft": "error",
+  },
+}
+`;

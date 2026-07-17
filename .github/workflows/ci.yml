@@ -29,6 +29,19 @@ jobs:
       - run: npm test
       - run: npm pack --dry-run --json
 
+  assets:
+    name: Deterministic assets (Ubuntu 24.04, Node 22.23.1)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.1
+          cache: npm
+      - run: npm ci
+      # Byte-identical rendering is intentionally restricted to this pinned environment.
+      - run: npm run assets:verify:reproduce
+
   minimum-pi-compatibility:
     name: Minimum Pi 0.80.6 compatibility
     runs-on: ubuntu-latest

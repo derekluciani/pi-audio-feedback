@@ -1,0 +1,36 @@
+{
+  "renderer": {
+    "webKitsAudioVersion": "0.1.0",
+    "nodeWebAudioApiVersion": "1.0.9",
+    "sampleRateHz": 48000,
+    "channels": 1,
+    "pcmBitDepth": 16,
+    "minimumDurationMs": 200,
+    "tailMs": 750,
+    "fadeOutMs": 5,
+    "normalization": "none"
+  },
+  "provenance": {
+    "repository": "https://github.com/derekluciani/pi-audio-feedback.git",
+    "ref": "e2c768728106736413fb4ff725b20303afbe9a06",
+    "upstreamCatalog": "https://audio.raphaelsalaja.com/library"
+  },
+  "themes": {
+    "core": {
+      "source": "assets/patches/core.json",
+      "sha256": "b9702e7cc9e018cbd42736ece94d47540697ac17e675c2d531c2db40ffa3ddfb"
+    },
+    "retro": {
+      "source": "assets/patches/retro.json",
+      "sha256": "134013b63261d50c2a24049e758f0346e1f9f474de2c6c9c1cdb33db6d20b2fc"
+    },
+    "organic": {
+      "source": "assets/patches/organic.json",
+      "sha256": "d67d124f70feefd091ca0b5771e32768f3fef706824ef2f1cb09b7d9eb6f10a0"
+    },
+    "soft": {
+      "source": "assets/patches/soft.json",
+      "sha256": "c76ff281d8023009aa7d1b37ef1c46e3944b310634d6d0988242371a0b0c9b98"
+    }
+  }
+}

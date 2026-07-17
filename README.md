@@ -40,3 +40,15 @@ outside TUI mode does not open an interface or play audio.
 Package code, generated WAV files, and package documentation are licensed under the MIT License. See
 [`LICENSE`](LICENSE). Licenses and attribution for third-party material used by bundled or generated
 assets are distributed in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
+## Asset verification
+
+`npm run assets:verify` is host-independent: it validates the authoritative patch provenance and
+checksums, approved mappings and paths, committed WAV headers and formats, manifest hashes, and
+artifact completeness without rendering audio. `npm test` uses the same committed-artifact check and
+verifies package contents.
+
+Byte-identical regeneration is a release check because renderer output is guaranteed only on the
+pinned Ubuntu 24.04 / Node.js 22.23.1 toolchain. The pinned CI job explicitly runs
+`npm run assets:verify:reproduce`; do not replace it with the host-independent command. Asset
+generation is likewise build/release-only and is not performed on user machines or at runtime.
