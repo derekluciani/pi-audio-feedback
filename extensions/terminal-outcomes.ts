@@ -28,6 +28,7 @@ export class TerminalOutcomeRequestAdapter {
   #nextGeneration = 0;
   #activeGeneration: number | null = null;
   #escapeGeneration: number | null = null;
+  #endedGeneration: number | null = null;
   #abortedGeneration: number | null = null;
 
   constructor(requester: TerminalOutcomeAudioRequester) {
@@ -38,6 +39,7 @@ export class TerminalOutcomeRequestAdapter {
     this.#nextGeneration += 1;
     this.#activeGeneration = this.#nextGeneration;
     this.#escapeGeneration = null;
+    this.#endedGeneration = null;
     this.#abortedGeneration = null;
     return this.#requester.request("agentStart");
   }
@@ -49,23 +51,20 @@ export class TerminalOutcomeRequestAdapter {
 
   onAgentEnd(messages: unknown): void {
     const generation = this.#activeGeneration;
-    if (
-      generation !== null &&
-      this.#escapeGeneration === generation &&
-      finalAssistantWasAborted(messages)
-    ) {
+    if (generation === null || this.#endedGeneration === generation) return;
+    this.#endedGeneration = generation;
+    if (this.#escapeGeneration === generation && finalAssistantWasAborted(messages)) {
       this.#abortedGeneration = generation;
     }
   }
 
   async onAgentSettled(): Promise<SchedulerRequestResult> {
     const generation = this.#activeGeneration;
-    const event =
-      generation !== null && this.#abortedGeneration === generation
-        ? "agentAborted"
-        : "agentSettled";
+    if (generation === null) return "discarded";
+    const event = this.#abortedGeneration === generation ? "agentAborted" : "agentSettled";
     this.#activeGeneration = null;
     this.#escapeGeneration = null;
+    this.#endedGeneration = null;
     this.#abortedGeneration = null;
     return this.#requester.request(event);
   }
@@ -73,6 +72,7 @@ export class TerminalOutcomeRequestAdapter {
   shutdown(): void {
     this.#activeGeneration = null;
     this.#escapeGeneration = null;
+    this.#endedGeneration = null;
     this.#abortedGeneration = null;
   }
 }

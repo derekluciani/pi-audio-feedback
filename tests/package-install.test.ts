@@ -136,10 +136,14 @@ describe("published package", () => {
         import audioFeedbackExtension from "pi-audio-feedback";
         const registrations = [];
         audioFeedbackExtension({ on: (event, handler) => registrations.push({ event, handler }) });
-        if (registrations.length !== 1 || registrations[0].event !== "session_start") {
-          throw new TypeError("Installed extension did not register session_start");
+        const events = registrations.map(({ event }) => event);
+        const expected = [
+          "session_start", "agent_start", "tool_execution_end",
+          "agent_end", "agent_settled", "session_shutdown",
+        ];
+        if (JSON.stringify(events) !== JSON.stringify(expected)) {
+          throw new TypeError("Installed extension did not register lifecycle hooks");
         }
-        await registrations[0].handler({ reason: "startup" }, {});
       `,
       "utf8",
     );
