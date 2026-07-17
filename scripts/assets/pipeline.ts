@@ -272,7 +272,7 @@ function encodePcm16Wav(buffer: AudioBuffer, context: string): Uint8Array {
       const sample = channels[channel]?.[frame];
       if (sample === undefined || !Number.isFinite(sample) || sample < -1 || sample > 1) {
         throw new RangeError(
-          `Rendered sample is outside signed-16 PCM range: ${context} frame=${frame} channel=${channel} value=${String(sample)}`,
+          `Rendered sample is outside signed-16 PCM range: ${context} frame=${String(frame)} channel=${String(channel)} value=${String(sample)}`,
         );
       }
       const pcmSample = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
@@ -290,7 +290,7 @@ function assertRepresentableSamples(buffer: AudioBuffer, context: string): void 
       const sample = samples[frame];
       if (sample === undefined || !Number.isFinite(sample) || sample < -1 || sample > 1) {
         throw new RangeError(
-          `Rendered sample is outside signed-16 PCM range: ${context} frame=${frame} channel=${channel} value=${String(sample)}`,
+          `Rendered sample is outside signed-16 PCM range: ${context} frame=${String(frame)} channel=${String(channel)} value=${String(sample)}`,
         );
       }
     }

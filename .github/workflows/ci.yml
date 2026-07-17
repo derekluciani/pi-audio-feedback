@@ -39,11 +39,6 @@ jobs:
           node-version: 22.23.1
           cache: npm
       - run: npm ci
-      - run: npm run assets:generate
-      - uses: actions/upload-artifact@v4
-        with:
-          name: linux-generated-wav
-          path: assets/wav
       - run: npm run assets:verify
 
   minimum-pi-compatibility:
