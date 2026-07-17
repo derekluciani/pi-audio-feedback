@@ -75,15 +75,25 @@ audibility.
 
 ## §11.5 Privacy, output, and resource containment
 
-- Closed static runtime graph: `tests/privacy.test.ts` recursively parses every published
-  `extensions/**/*.ts` file with the TypeScript compiler AST. Import/export declarations may name
-  only the two Pi peers, the exact Node built-ins used by production, or relative modules that
-  resolve inside that published file set. Import-equals and every dynamic import are forbidden.
-  Identifier/property checks fail closed on require/createRequire, direct or indirect eval,
-  Function, process loader access, and fetch/WebSocket/EventSource/XMLHttpRequest/sendBeacon,
-  including destructuring and statically computed property names. Adversarial fixtures verify
-  aliases, destructuring, indirect eval, Function construction/calls, computed globals, dynamic
-  imports, createRequire/require aliases, and node:http2/tls/dns/dns-promises/dgram are rejected.
+- Closed static runtime graph and player boundary: `tests/privacy.test.ts` recursively parses every
+  published `extensions/**/*.ts` file with the TypeScript compiler AST; the asserted eight-file set
+  is the same extension set required by the 66-file pack snapshot in
+  `tests/package-install.test.ts`. Imports may name only the two Pi peers, the exact Node built-ins
+  used by production, or relative modules resolving inside that scanned set. Import-equals and
+  dynamic import are forbidden. The product's unused global/reflection roots (`globalThis`,
+  `global`, `window`, `navigator`, `Reflect`, `Proxy`, `eval`, `Function`, and `WebAssembly`) are
+  rejected entirely, as are forbidden loader/network names, constructor/prototype escapes, Object
+  aliasing/reflection, and computed Object/loader access; production Object use is limited to
+  `freeze`, `fromEntries`, and `keys`. Adversarial fixtures cover aliases/destructuring,
+  concatenated keys, Reflect get/apply, Object descriptors, indirect eval/Function, Proxy, dynamic
+  loaders, and every mocked network built-in.
+- Closed subprocess contract: the same analyzer permits `node:child_process` only in the published
+  `extensions/platform-adapters.ts`, with exactly the named `spawn as nodeSpawn` import and
+  type-only `SpawnOptions`. The imported binding is restricted to `selectPlatformPlayer`'s default
+  injected `SpawnPlayer`; all four boundary calls and common options are AST-matched to PRD §5's
+  exact `afplay`, `paplay`, `aplay`, and `powershell.exe` executable/argument contracts. Mutations
+  adding direct or aliased `curl`, `exec`/`execFile`/`fork`, a dynamic executable, generic spawn
+  export, changed arguments, inherited stdio, or shell execution must fail through that analyzer.
 - Dynamic offline boundary: before production extension import, the same test hoists throwing,
   counting mocks for global `fetch` and the entry APIs of `node:http`, `node:https`, `node:http2`,
   `node:net`, `node:tls`, `node:dns`, `node:dns/promises`, and `node:dgram`. The separate

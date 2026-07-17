@@ -116,6 +116,18 @@ const FORBIDDEN_CAPABILITIES = new Set([
   "constructor",
   "__proto__",
 ]);
+const FORBIDDEN_RUNTIME_ROOTS = new Set([
+  "globalThis",
+  "global",
+  "window",
+  "navigator",
+  "Reflect",
+  "Proxy",
+  "eval",
+  "Function",
+  "WebAssembly",
+]);
+const ALLOWED_OBJECT_OPERATIONS = new Set(["freeze", "fromEntries", "keys"]);
 const temporaryDirectories: string[] = [];
 
 class FakeChild extends EventEmitter implements SchedulerChild {
@@ -176,32 +188,150 @@ function assertAllowedModuleSpecifier(
   }
 }
 
+function compactNodeText(node: ts.Node, source: ts.SourceFile): string {
+  return node
+    .getText(source)
+    .replace(/\s/gu, "")
+    .replace(/,([\])}])/gu, "$1");
+}
+
+function assertPlatformChildProcessContract(file: string, source: ts.SourceFile): void {
+  const isPlatformAdapter = normalize(file).endsWith("/extensions/platform-adapters.ts");
+  const childProcessImports = source.statements.filter(
+    (statement): statement is ts.ImportDeclaration =>
+      ts.isImportDeclaration(statement) &&
+      ts.isStringLiteral(statement.moduleSpecifier) &&
+      statement.moduleSpecifier.text === "node:child_process",
+  );
+  if (!isPlatformAdapter) {
+    if (childProcessImports.length > 0) {
+      throw new Error(`${file}: node:child_process is restricted to platform-adapters.ts`);
+    }
+    return;
+  }
+
+  if (childProcessImports.length !== 1) {
+    throw new Error(`${file}: expected exactly one node:child_process import`);
+  }
+  const importClause = childProcessImports[0]?.importClause;
+  const bindings = importClause?.namedBindings;
+  if (
+    importClause === undefined ||
+    importClause.phaseModifier !== undefined ||
+    importClause.name !== undefined ||
+    bindings === undefined ||
+    !ts.isNamedImports(bindings) ||
+    bindings.elements.length !== 2
+  ) {
+    throw new Error(`${file}: child_process import must contain only spawn and SpawnOptions`);
+  }
+  const spawnImport = bindings.elements[0];
+  const optionsImport = bindings.elements[1];
+  if (
+    spawnImport === undefined ||
+    spawnImport.isTypeOnly ||
+    spawnImport.propertyName?.text !== "spawn" ||
+    spawnImport.name.text !== "nodeSpawn" ||
+    optionsImport === undefined ||
+    !optionsImport.isTypeOnly ||
+    optionsImport.propertyName !== undefined ||
+    optionsImport.name.text !== "SpawnOptions"
+  ) {
+    throw new Error(
+      `${file}: child_process bindings must be spawn as nodeSpawn and type SpawnOptions`,
+    );
+  }
+
+  const spawnOptionsDeclarations = source.statements.filter(
+    (statement): statement is ts.FunctionDeclaration =>
+      ts.isFunctionDeclaration(statement) && statement.name?.text === "spawnOptions",
+  );
+  const spawnOptionsText = spawnOptionsDeclarations[0]
+    ? compactNodeText(spawnOptionsDeclarations[0], source)
+    : "";
+  const expectedSpawnOptions =
+    'functionspawnOptions(wavPath:string):SpawnOptions{return{cwd:dirname(wavPath),env:process.env,stdio:"ignore",detached:false,windowsHide:true,shell:false};}';
+  if (spawnOptionsDeclarations.length !== 1 || spawnOptionsText !== expectedSpawnOptions) {
+    throw new Error(`${file}: common spawn options do not match PRD section 5.1`);
+  }
+
+  const nodeSpawnUses: ts.Identifier[] = [];
+  const spawnPlayerUses: ts.Identifier[] = [];
+  const privateSpawnPlayerUses: ts.PrivateIdentifier[] = [];
+  const boundaryCalls: ts.CallExpression[] = [];
+  const collect = (node: ts.Node): void => {
+    if (ts.isIdentifier(node) && node.text === "nodeSpawn") nodeSpawnUses.push(node);
+    if (ts.isIdentifier(node) && node.text === "spawnPlayer") spawnPlayerUses.push(node);
+    if (ts.isPrivateIdentifier(node) && node.text === "#spawnPlayer") {
+      privateSpawnPlayerUses.push(node);
+    }
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression;
+      if (
+        (ts.isIdentifier(callee) && callee.text === "spawnPlayer") ||
+        (ts.isPropertyAccessExpression(callee) &&
+          ts.isPrivateIdentifier(callee.name) &&
+          callee.name.text === "#spawnPlayer")
+      ) {
+        boundaryCalls.push(node);
+      }
+    }
+    ts.forEachChild(node, collect);
+  };
+  collect(source);
+
+  const isImportBinding = (identifier: ts.Identifier): boolean =>
+    ts.isImportSpecifier(identifier.parent) && identifier.parent.name === identifier;
+  const isDefaultInjection = (identifier: ts.Identifier): boolean => {
+    const parameter = identifier.parent;
+    if (!ts.isParameter(parameter) || parameter.initializer !== identifier) return false;
+    if (!ts.isIdentifier(parameter.name) || parameter.name.text !== "spawnPlayer") return false;
+    const declaration = parameter.parent;
+    return (
+      ts.isFunctionDeclaration(declaration) && declaration.name?.text === "selectPlatformPlayer"
+    );
+  };
+  if (
+    nodeSpawnUses.length !== 2 ||
+    !nodeSpawnUses.some(isImportBinding) ||
+    !nodeSpawnUses.some(isDefaultInjection)
+  ) {
+    throw new Error(
+      `${file}: imported nodeSpawn may only be selectPlatformPlayer's default SpawnPlayer`,
+    );
+  }
+
+  // These counts bind every production seam occurrence. An added alias, parameter, property access,
+  // or generic exported launch path changes a count even when it keeps an approved executable text.
+  if (spawnPlayerUses.length !== 6 || privateSpawnPlayerUses.length !== 4) {
+    throw new Error(`${file}: SpawnPlayer boundary shape changed`);
+  }
+
+  const expectedCalls = new Set([
+    'this.#spawnPlayer("paplay",[this.#wavPath],spawnOptions(this.#wavPath))',
+    'this.#spawnPlayer("aplay",[this.#wavPath],spawnOptions(this.#wavPath))',
+    'spawnPlayer("afplay",[cue.wavPath],spawnOptions(cue.wavPath))',
+    'spawnPlayer("powershell.exe",["-NoLogo","-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File",cue.powershellHelperPath,"-Path",cue.wavPath],spawnOptions(cue.wavPath))',
+  ]);
+  const actualCalls = boundaryCalls.map((call) => compactNodeText(call, source));
+  if (
+    actualCalls.length !== expectedCalls.size ||
+    actualCalls.some((call) => !expectedCalls.has(call)) ||
+    new Set(actualCalls).size !== expectedCalls.size
+  ) {
+    throw new Error(
+      `${file}: player launch sites do not match the closed executable/argument contract`,
+    );
+  }
+}
+
 function assertNoRuntimeCapability(
   file: string,
   source: ts.SourceFile,
   extensionRoot: string,
   publishedFiles: ReadonlySet<string>,
 ): void {
-  const globalRoots = new Set(["globalThis", "global", "window", "navigator"]);
-  let discoveredAlias = true;
-  while (discoveredAlias) {
-    discoveredAlias = false;
-    const discover = (node: ts.Node): void => {
-      if (
-        ts.isVariableDeclaration(node) &&
-        ts.isIdentifier(node.name) &&
-        node.initializer !== undefined &&
-        ts.isIdentifier(node.initializer) &&
-        globalRoots.has(node.initializer.text) &&
-        !globalRoots.has(node.name.text)
-      ) {
-        globalRoots.add(node.name.text);
-        discoveredAlias = true;
-      }
-      ts.forEachChild(node, discover);
-    };
-    discover(source);
-  }
+  assertPlatformChildProcessContract(file, source);
 
   const visit = (node: ts.Node): void => {
     if (
@@ -216,8 +346,21 @@ function assertNoRuntimeCapability(
     if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
       throw new Error(`${file}: dynamic import is forbidden`);
     }
+    if (ts.isIdentifier(node) && FORBIDDEN_RUNTIME_ROOTS.has(node.text)) {
+      throw new Error(`${file}: forbidden runtime root or syntax: ${node.text}`);
+    }
     if (ts.isIdentifier(node) && FORBIDDEN_CAPABILITIES.has(node.text)) {
       throw new Error(`${file}: forbidden runtime capability: ${node.text}`);
+    }
+    if (ts.isIdentifier(node) && node.text === "Object") {
+      const parent = node.parent;
+      if (
+        !ts.isPropertyAccessExpression(parent) ||
+        parent.expression !== node ||
+        !ALLOWED_OBJECT_OPERATIONS.has(parent.name.text)
+      ) {
+        throw new Error(`${file}: Object reflection or aliasing is forbidden`);
+      }
     }
     if (ts.isPropertyAccessExpression(node) && FORBIDDEN_CAPABILITIES.has(node.name.text)) {
       throw new Error(`${file}: forbidden runtime property: ${node.name.text}`);
@@ -227,15 +370,15 @@ function assertNoRuntimeCapability(
       if (property !== null && FORBIDDEN_CAPABILITIES.has(property)) {
         throw new Error(`${file}: forbidden computed runtime property: ${property}`);
       }
-      // Fail closed for computed access on global/loader roots; product code needs none.
+      if (ts.isIdentifier(node.expression) && node.expression.text === "Object") {
+        throw new Error(`${file}: computed Object access is forbidden`);
+      }
       if (
         property === null &&
         ts.isIdentifier(node.expression) &&
-        (globalRoots.has(node.expression.text) ||
-          node.expression.text === "module" ||
-          node.expression.text === "process")
+        (node.expression.text === "module" || node.expression.text === "process")
       ) {
-        throw new Error(`${file}: dynamic global/loader property access is forbidden`);
+        throw new Error(`${file}: dynamic loader property access is forbidden`);
       }
     }
     ts.forEachChild(node, visit);
@@ -472,8 +615,10 @@ describe("runtime privacy and output containment", () => {
       "terminal-outcomes.ts",
     ]);
     const publishedFiles = new Set(files);
+    const publishedSource = new Map<string, string>();
     for (const file of files) {
       const sourceText = await nodeFileSystem.readFile(file, "utf8");
+      publishedSource.set(file, sourceText);
       assertNoRuntimeCapability(
         file,
         parseFixture(file, sourceText),
@@ -487,11 +632,19 @@ describe("runtime privacy and output containment", () => {
       'import { request as send } from "node:https"; send("x")',
       'import { createRequire as cr } from "node:module"; const r = cr(import.meta.url); r("node:https")',
       'const { fetch: f } = globalThis; f("https://example.invalid")',
+      'const get = Reflect.get; const apply = Reflect.apply; const f = get(globalThis, "fetch"); apply(f, undefined, ["https://example.invalid"])',
+      'const descriptor = Object.getOwnPropertyDescriptor(globalThis, "fetch"); descriptor?.value("https://example.invalid")',
+      'const O = Object; const key = "getOwn" + "PropertyDescriptor"; O[key](globalThis, "fetch")',
+      'const R = Reflect; R["g" + "et"](globalThis, "fetch")',
       'const f = globalThis["fe" + "tch"]; f("https://example.invalid")',
       'const globals = globalThis; const key = "fetch"; globals[key]("https://example.invalid")',
       '(0, eval)("source")',
       'const C = Function; C("source")',
       'new (globalThis["Fun" + "ction"])("source")',
+      'const indirectEval = eval; indirectEval("source")',
+      'const IndirectFunction = Function; new IndirectFunction("source")',
+      'const Wrapped = new Proxy(Function, {}); new Wrapped("source")',
+      'WebAssembly.instantiateStreaming(fetch("module.wasm"))',
       'void import("node:http")',
       'const load = require; load("node:http")',
       'const cr = module["create" + "Require"]; cr(import.meta.url)',
@@ -515,6 +668,45 @@ describe("runtime privacy and output containment", () => {
         rejected = true;
       }
       expect(rejected, `analyzer accepted adversarial fixture: ${fixture}`).toBe(true);
+    }
+
+    const platformAdapterPath = join(extensionRoot, "platform-adapters.ts");
+    const platformAdapterSource = publishedSource.get(platformAdapterPath);
+    expect(platformAdapterSource).toBeDefined();
+    if (platformAdapterSource === undefined) throw new Error("platform adapter source missing");
+    const childProcessMutations = [
+      `${platformAdapterSource}\nexport const escape = () => nodeSpawn("curl", ["https://example.invalid"], {});`,
+      `${platformAdapterSource}\nconst run = nodeSpawn; export const escape = () => run("curl", [], {});`,
+      platformAdapterSource.replace(
+        'import { spawn as nodeSpawn, type SpawnOptions } from "node:child_process";',
+        'import { spawn as nodeSpawn, exec, type SpawnOptions } from "node:child_process";',
+      ),
+      platformAdapterSource.replace(
+        'import { spawn as nodeSpawn, type SpawnOptions } from "node:child_process";',
+        'import { spawn as nodeSpawn, execFile, type SpawnOptions } from "node:child_process";',
+      ),
+      platformAdapterSource.replace(
+        'import { spawn as nodeSpawn, type SpawnOptions } from "node:child_process";',
+        'import { spawn as nodeSpawn, fork, type SpawnOptions } from "node:child_process";',
+      ),
+      platformAdapterSource.replace("shell: false", "shell: true"),
+      platformAdapterSource.replace('stdio: "ignore"', 'stdio: "inherit"'),
+      platformAdapterSource.replace('spawnPlayer("afplay",', "spawnPlayer(executable,"),
+      platformAdapterSource.replace(
+        "[cue.wavPath], spawnOptions(cue.wavPath)",
+        '["--url", cue.wavPath], spawnOptions(cue.wavPath)',
+      ),
+      `${platformAdapterSource}\nexport const genericSpawn = (spawnPlayer: SpawnPlayer, executable: string) => spawnPlayer(executable, [], {});`,
+    ];
+    for (const mutation of childProcessMutations) {
+      expect(() => {
+        assertNoRuntimeCapability(
+          platformAdapterPath,
+          parseFixture(platformAdapterPath, mutation),
+          extensionRoot,
+          publishedFiles,
+        );
+      }).toThrow();
     }
   });
 
