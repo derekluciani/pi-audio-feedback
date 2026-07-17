@@ -3,33 +3,23 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
+import {
+  AUDIO_EVENTS,
+  DEFAULT_AUDIO_EVENT_TOGGLES,
+  isAudioTheme,
+  type AudioEvent,
+  type AudioEventToggles,
+  type AudioTheme,
+} from "./audio-catalog.js";
+
+export { AUDIO_EVENTS, AUDIO_THEMES, type AudioEvent, type AudioTheme } from "./audio-catalog.js";
+
 export const CONFIG_FILE_NAME = "pi-audio-feedback.json";
 export const CONFIG_VERSION = 1 as const;
 /** Configuration is untrusted input; this bounds both allocation and bytes read. */
 export const CONFIG_MAX_BYTES = 64 * 1024;
 
-export const AUDIO_THEMES = ["core", "retro", "organic", "soft"] as const;
-export type AudioTheme = (typeof AUDIO_THEMES)[number];
-
-export const AUDIO_EVENTS = [
-  "appStart",
-  "agentStart",
-  "toolError",
-  "agentAborted",
-  "agentSettled",
-  "settingsRootEnter",
-  "settingsRootExit",
-  "settingsSubmenuEnter",
-  "settingsSubmenuExit",
-  "settingsNavigate",
-  "settingsOptionSelect",
-  "settingsToggleOn",
-  "settingsToggleOff",
-  "settingsThemePreview",
-] as const;
-export type AudioEvent = (typeof AUDIO_EVENTS)[number];
-
-export type AudioEventConfiguration = Readonly<Record<AudioEvent, boolean>>;
+export type AudioEventConfiguration = AudioEventToggles;
 
 export interface AudioFeedbackConfiguration {
   readonly version: typeof CONFIG_VERSION;
@@ -40,22 +30,7 @@ export interface AudioFeedbackConfiguration {
 export const DEFAULT_CONFIGURATION: AudioFeedbackConfiguration = Object.freeze({
   version: CONFIG_VERSION,
   theme: "core",
-  events: Object.freeze({
-    appStart: true,
-    agentStart: true,
-    toolError: true,
-    agentAborted: true,
-    agentSettled: true,
-    settingsRootEnter: true,
-    settingsRootExit: true,
-    settingsSubmenuEnter: true,
-    settingsSubmenuExit: true,
-    settingsNavigate: true,
-    settingsOptionSelect: true,
-    settingsToggleOn: true,
-    settingsToggleOff: true,
-    settingsThemePreview: true,
-  }),
+  events: DEFAULT_AUDIO_EVENT_TOGGLES,
 });
 
 export type ConfigurationWarning = "malformed" | "symlink" | "unreadable" | "unsupported-version";
@@ -151,10 +126,6 @@ function hasCode(error: unknown, code: string): boolean {
   return isRecord(error) && error.code === code;
 }
 
-function isTheme(value: unknown): value is AudioTheme {
-  return typeof value === "string" && AUDIO_THEMES.some((theme) => theme === value);
-}
-
 function cloneConfiguration(configuration: AudioFeedbackConfiguration): AudioFeedbackConfiguration {
   return {
     version: CONFIG_VERSION,
@@ -181,7 +152,7 @@ function validateVersionOne(
 
   const configuration: AudioFeedbackConfiguration = {
     version: CONFIG_VERSION,
-    theme: isTheme(record.theme) ? record.theme : DEFAULT_CONFIGURATION.theme,
+    theme: isAudioTheme(record.theme) ? record.theme : DEFAULT_CONFIGURATION.theme,
     events,
   };
   const persisted: Record<string, unknown> = {
@@ -267,7 +238,7 @@ function validateMutation(mutation: ConfigurationMutation):
 
   let theme: AudioTheme | undefined;
   if ("theme" in mutation) {
-    if (!isTheme(mutation.theme)) return { valid: false };
+    if (!isAudioTheme(mutation.theme)) return { valid: false };
     theme = mutation.theme;
   }
 
