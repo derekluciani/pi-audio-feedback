@@ -1,11 +1,59 @@
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, lstat, mkdir, open, rename, unlink } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+// Resolve the documented helper without evaluating Pi's root entry point, which eagerly
+// loads its full CLI and Node-version-sensitive HTTP transitives. Pi 0.80.6 does not export
+// its side-effect-light config subpath, so resolve it beside the public entry point.
+const require = createRequire(import.meta.url);
+let piConfigPath: string | undefined;
+for (const modulesDirectory of require.resolve.paths("@earendil-works/pi-coding-agent") ?? []) {
+  const candidate = join(
+    modulesDirectory,
+    "@earendil-works",
+    "pi-coding-agent",
+    "dist",
+    "config.js",
+  );
+  try {
+    await access(candidate, constants.R_OK);
+    piConfigPath = candidate;
+    break;
+  } catch {
+    // Continue through Node's normal ancestor node_modules search locations.
+  }
+}
+if (piConfigPath === undefined) {
+  throw new TypeError("The compatible Pi config module is unavailable");
+}
+const piConfigModule: unknown = await import(pathToFileURL(piConfigPath).href);
+function hasGetAgentDir(value: unknown): value is { getAgentDir(): unknown } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "getAgentDir" in value &&
+    typeof value.getAgentDir === "function"
+  );
+}
+
+if (!hasGetAgentDir(piConfigModule)) {
+  throw new TypeError("The compatible Pi getAgentDir export is unavailable");
+}
+const getAgentDir = (): string => {
+  const directory = piConfigModule.getAgentDir();
+  if (typeof directory !== "string") {
+    throw new TypeError("Pi getAgentDir returned an invalid path");
+  }
+  return directory;
+};
 
 export const CONFIG_FILE_NAME = "pi-audio-feedback.json";
 export const CONFIG_VERSION = 1 as const;
+/** Configuration is untrusted input; this bounds both allocation and bytes read. */
+export const CONFIG_MAX_BYTES = 64 * 1024;
 
 export const AUDIO_THEMES = ["core", "retro", "organic", "soft"] as const;
 export type AudioTheme = (typeof AUDIO_THEMES)[number];
@@ -81,8 +129,23 @@ export type MutationResult =
       readonly reason: "invalid-mutation" | "not-writable" | "write-failed";
     };
 
-/** Minimal file handle used by atomic persistence and replaceable in tests. */
+export interface ConfigurationStats {
+  readonly size: number;
+  readonly dev: number | bigint;
+  readonly ino: number | bigint;
+  isSymbolicLink(): boolean;
+  isFile(): boolean;
+}
+
+/** Minimal file handle used by safe reads and atomic persistence, replaceable in tests. */
 export interface ConfigurationFileHandle {
+  read(
+    buffer: Uint8Array,
+    offset: number,
+    length: number,
+    position: number,
+  ): Promise<{ readonly bytesRead: number }>;
+  stat(): Promise<ConfigurationStats>;
   writeFile(data: string, encoding: "utf8"): Promise<void>;
   sync(): Promise<void>;
   close(): Promise<void>;
@@ -90,28 +153,32 @@ export interface ConfigurationFileHandle {
 
 /** Injectable filesystem boundary. Methods must have Node filesystem semantics. */
 export interface ConfigurationFileSystem {
-  lstat(path: string): Promise<{ isSymbolicLink(): boolean }>;
-  readFile(path: string, encoding: "utf8"): Promise<string>;
+  lstat(path: string): Promise<ConfigurationStats>;
   mkdir(path: string, options: { recursive: true; mode?: number }): Promise<unknown>;
-  open(path: string, flags: "wx" | "r", mode?: number): Promise<ConfigurationFileHandle>;
+  open(path: string, flags: "wx" | "r" | number, mode?: number): Promise<ConfigurationFileHandle>;
   rename(oldPath: string, newPath: string): Promise<void>;
   unlink(path: string): Promise<void>;
 }
 
 const nodeFileSystem: ConfigurationFileSystem = {
   lstat,
-  readFile,
   mkdir,
   open: async (path, flags, mode) => open(path, flags, mode),
   rename,
   unlink,
 };
 
+interface FileIdentity {
+  readonly dev: number | bigint;
+  readonly ino: number | bigint;
+}
+
 interface ClassifiedConfiguration {
   readonly classification: ConfigurationClassification;
   readonly warning: ConfigurationWarning | null;
   readonly configuration: AudioFeedbackConfiguration;
   readonly persisted: Record<string, unknown> | null;
+  readonly identity: FileIdentity | null;
 }
 
 export interface ConfigurationStoreOptions {
@@ -141,7 +208,10 @@ function cloneConfiguration(configuration: AudioFeedbackConfiguration): AudioFee
   };
 }
 
-function validateVersionOne(record: Record<string, unknown>): ClassifiedConfiguration {
+function validateVersionOne(
+  record: Record<string, unknown>,
+  identity: FileIdentity,
+): ClassifiedConfiguration {
   const rawEvents = isRecord(record.events) ? record.events : {};
   const events = Object.fromEntries(
     AUDIO_EVENTS.map((event) => [
@@ -152,10 +222,7 @@ function validateVersionOne(record: Record<string, unknown>): ClassifiedConfigur
     ]),
   );
 
-  if (!isCompleteEvents(events)) {
-    // Object.fromEntries above is exhaustive; keep the runtime boundary explicit.
-    return malformedConfiguration();
-  }
+  if (!isCompleteEvents(events)) return malformedConfiguration(identity);
 
   const configuration: AudioFeedbackConfiguration = {
     version: CONFIG_VERSION,
@@ -169,32 +236,37 @@ function validateVersionOne(record: Record<string, unknown>): ClassifiedConfigur
     events: { ...rawEvents, ...configuration.events },
   };
 
-  return {
-    classification: "valid",
-    warning: null,
-    configuration,
-    persisted,
-  };
+  return { classification: "valid", warning: null, configuration, persisted, identity };
 }
 
 function isCompleteEvents(value: Record<string, unknown>): value is Record<AudioEvent, boolean> {
   return AUDIO_EVENTS.every((event) => typeof value[event] === "boolean");
 }
 
-function malformedConfiguration(): ClassifiedConfiguration {
+function malformedConfiguration(identity: FileIdentity | null = null): ClassifiedConfiguration {
   return {
     classification: "malformed",
     warning: "malformed",
     configuration: cloneConfiguration(DEFAULT_CONFIGURATION),
     persisted: null,
+    identity,
   };
 }
 
-function classifyParsed(value: unknown): ClassifiedConfiguration {
-  if (!isRecord(value)) return malformedConfiguration();
+function protectedConfiguration(classification: "symlink" | "unreadable"): ClassifiedConfiguration {
+  return {
+    classification,
+    warning: classification,
+    configuration: cloneConfiguration(DEFAULT_CONFIGURATION),
+    persisted: null,
+    identity: null,
+  };
+}
 
+function classifyParsed(value: unknown, identity: FileIdentity): ClassifiedConfiguration {
+  if (!isRecord(value)) return malformedConfiguration(identity);
   if (typeof value.version === "number" && value.version < CONFIG_VERSION) {
-    return malformedConfiguration();
+    return malformedConfiguration(identity);
   }
   if (typeof value.version === "number" && value.version > CONFIG_VERSION) {
     return {
@@ -202,11 +274,10 @@ function classifyParsed(value: unknown): ClassifiedConfiguration {
       warning: "unsupported-version",
       configuration: cloneConfiguration(DEFAULT_CONFIGURATION),
       persisted: null,
+      identity,
     };
   }
-
-  // A missing or wrong-type known field receives its version-1 default.
-  return validateVersionOne(value);
+  return validateVersionOne(value, identity);
 }
 
 function snapshot(path: string, classified: ClassifiedConfiguration): ConfigurationSnapshot {
@@ -216,6 +287,14 @@ function snapshot(path: string, classified: ClassifiedConfiguration): Configurat
     warning: classified.warning,
     configuration: cloneConfiguration(classified.configuration),
   };
+}
+
+function sameIdentity(left: FileIdentity, right: ConfigurationStats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function isSafeRegularFile(stats: ConfigurationStats): boolean {
+  return !stats.isSymbolicLink() && stats.isFile() && stats.size <= CONFIG_MAX_BYTES;
 }
 
 function validateMutation(mutation: ConfigurationMutation):
@@ -287,15 +366,12 @@ function applyMutation(
   };
 }
 
-/** Resolves the global configuration path. It never consults the project cwd. */
+/** Resolves the global configuration path using Pi's helper, never the project cwd. */
 export function getConfigurationPath(agentDirectory: string = getAgentDir()): string {
   return join(agentDirectory, CONFIG_FILE_NAME);
 }
 
-/**
- * Owns validated runtime configuration and atomic Settings mutations.
- * Expected filesystem failures are converted to warning/failure values and never logged.
- */
+/** Owns validated runtime configuration and atomic Settings mutations. */
 export class ConfigurationStore {
   readonly path: string;
   readonly #fileSystem: ConfigurationFileSystem;
@@ -314,14 +390,12 @@ export class ConfigurationStore {
       warning: null,
       configuration: DEFAULT_CONFIGURATION,
       persisted: null,
+      identity: null,
     });
   }
 
   get current(): ConfigurationSnapshot {
-    return {
-      ...this.#current,
-      configuration: cloneConfiguration(this.#current.configuration),
-    };
+    return { ...this.#current, configuration: cloneConfiguration(this.#current.configuration) };
   }
 
   async load(): Promise<ConfigurationSnapshot> {
@@ -340,9 +414,9 @@ export class ConfigurationStore {
   }
 
   async #readAndClassify(): Promise<ClassifiedConfiguration> {
-    let stats: { isSymbolicLink(): boolean };
+    let pathStats: ConfigurationStats;
     try {
-      stats = await this.#fileSystem.lstat(this.path);
+      pathStats = await this.#fileSystem.lstat(this.path);
     } catch (error: unknown) {
       if (hasCode(error, "ENOENT")) {
         return {
@@ -350,43 +424,83 @@ export class ConfigurationStore {
           warning: null,
           configuration: cloneConfiguration(DEFAULT_CONFIGURATION),
           persisted: null,
+          identity: null,
         };
       }
-      return {
-        classification: "unreadable",
-        warning: "unreadable",
-        configuration: cloneConfiguration(DEFAULT_CONFIGURATION),
-        persisted: null,
-      };
+      return protectedConfiguration("unreadable");
     }
 
-    if (stats.isSymbolicLink()) {
-      return {
-        classification: "symlink",
-        warning: "symlink",
-        configuration: cloneConfiguration(DEFAULT_CONFIGURATION),
-        persisted: null,
-      };
-    }
+    if (pathStats.isSymbolicLink()) return protectedConfiguration("symlink");
+    if (!isSafeRegularFile(pathStats)) return protectedConfiguration("unreadable");
 
-    let source: string;
+    let handle: ConfigurationFileHandle | undefined;
     try {
-      source = await this.#fileSystem.readFile(this.path, "utf8");
-    } catch {
-      return {
-        classification: "unreadable",
-        warning: "unreadable",
-        configuration: cloneConfiguration(DEFAULT_CONFIGURATION),
-        persisted: null,
-      };
-    }
+      const readFlags =
+        this.#platform === "win32" ? "r" : constants.O_RDONLY | constants.O_NOFOLLOW;
+      handle = await this.#fileSystem.open(this.path, readFlags);
+      const handleStats = await handle.stat();
+      if (!isSafeRegularFile(handleStats) || !sameIdentity(pathStats, handleStats)) {
+        return protectedConfiguration("unreadable");
+      }
 
-    if (source.trim().length === 0) return malformedConfiguration();
-    try {
-      const parsed: unknown = JSON.parse(source);
-      return classifyParsed(parsed);
+      const bytes = new Uint8Array(CONFIG_MAX_BYTES + 1);
+      let offset = 0;
+      while (offset < bytes.length) {
+        const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
+        if (bytesRead === 0) break;
+        offset += bytesRead;
+      }
+      if (offset > CONFIG_MAX_BYTES) return protectedConfiguration("unreadable");
+
+      const identity = { dev: handleStats.dev, ino: handleStats.ino };
+      const source = Buffer.from(bytes.subarray(0, offset)).toString("utf8");
+      if (source.trim().length === 0) return malformedConfiguration(identity);
+      try {
+        const parsed: unknown = JSON.parse(source);
+        return classifyParsed(parsed, identity);
+      } catch {
+        return malformedConfiguration(identity);
+      }
     } catch {
-      return malformedConfiguration();
+      // If a regular path was swapped to a symlink before no-follow open, retain the
+      // more useful protected-path classification without ever opening its target.
+      try {
+        if ((await this.#fileSystem.lstat(this.path)).isSymbolicLink()) {
+          return protectedConfiguration("symlink");
+        }
+      } catch {
+        // The original open/read error remains an unreadable classification.
+      }
+      return protectedConfiguration("unreadable");
+    } finally {
+      if (handle !== undefined) {
+        try {
+          await handle.close();
+        } catch {
+          // Expected filesystem failures remain silent and UI-safe.
+        }
+      }
+    }
+  }
+
+  async #pathStillMatches(disk: ClassifiedConfiguration): Promise<boolean> {
+    try {
+      const currentStats = await this.#fileSystem.lstat(this.path);
+      return (
+        disk.identity !== null &&
+        isSafeRegularFile(currentStats) &&
+        sameIdentity(disk.identity, currentStats)
+      );
+    } catch (error: unknown) {
+      return disk.classification === "missing" && hasCode(error, "ENOENT");
+    }
+  }
+
+  async #removeTemporary(temporaryPath: string): Promise<void> {
+    try {
+      await this.#fileSystem.unlink(temporaryPath);
+    } catch {
+      // The temp may not exist; cleanup is best effort.
     }
   }
 
@@ -394,7 +508,6 @@ export class ConfigurationStore {
     const disk = await this.#readAndClassify();
     const validatedMutation = validateMutation(mutation);
     if (!validatedMutation.valid) return { ok: false, reason: "invalid-mutation" };
-
     if (
       disk.classification === "symlink" ||
       disk.classification === "unreadable" ||
@@ -423,7 +536,6 @@ export class ConfigurationStore {
       await handle.sync();
       await handle.close();
       handle = undefined;
-      await this.#fileSystem.rename(temporaryPath, this.path);
     } catch {
       if (handle !== undefined) {
         try {
@@ -432,11 +544,21 @@ export class ConfigurationStore {
           // The original persistence failure determines the result.
         }
       }
-      try {
-        await this.#fileSystem.unlink(temporaryPath);
-      } catch {
-        // The temp may not exist; cleanup is best effort.
-      }
+      await this.#removeTemporary(temporaryPath);
+      return { ok: false, reason: "write-failed" };
+    }
+
+    // Best-effort validation immediately before rename avoids knowingly replacing a
+    // protected path that changed after the safe read. The rename remains atomic.
+    if (!(await this.#pathStillMatches(disk))) {
+      await this.#removeTemporary(temporaryPath);
+      return { ok: false, reason: "not-writable" };
+    }
+
+    try {
+      await this.#fileSystem.rename(temporaryPath, this.path);
+    } catch {
+      await this.#removeTemporary(temporaryPath);
       return { ok: false, reason: "write-failed" };
     }
 
@@ -458,6 +580,7 @@ export class ConfigurationStore {
       warning: null,
       configuration: merged.configuration,
       persisted: merged.persisted,
+      identity: null,
     });
     return { ok: true, configuration: cloneConfiguration(merged.configuration) };
   }

@@ -19,6 +19,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AUDIO_EVENTS,
   CONFIG_FILE_NAME,
+  CONFIG_MAX_BYTES,
   ConfigurationStore,
   DEFAULT_CONFIGURATION,
   getConfigurationPath,
@@ -30,7 +31,6 @@ const temporaryDirectories: string[] = [];
 
 const realFileSystem: ConfigurationFileSystem = {
   lstat,
-  readFile,
   mkdir,
   open: async (path, flags, mode) => open(path, flags, mode),
   rename,
@@ -144,6 +144,113 @@ describe("configuration loading and validation", () => {
     expect((await readJson(target)).theme).toBe("retro");
   });
 
+  it("rejects a path swapped to a symlink between lstat and no-follow open", async () => {
+    const path = await temporaryConfigPath();
+    const original = join(path, "..", "original.json");
+    const target = join(path, "..", "target.json");
+    await writeConfig(path, { version: 1, theme: "core" });
+    await writeConfig(target, { version: 1, theme: "retro", future: true });
+    let raced = false;
+    const fileSystem: ConfigurationFileSystem = {
+      ...realFileSystem,
+      open: async (openedPath, flags, mode) => {
+        if (openedPath === path && !raced) {
+          raced = true;
+          await rename(path, original);
+          await symlink(target, path);
+        }
+        return open(openedPath, flags, mode);
+      },
+    };
+    const store = new ConfigurationStore({ path, fileSystem, platform: "linux" });
+
+    expect(await store.load()).toMatchObject({ classification: "symlink", warning: "symlink" });
+    expect(await store.mutate({ theme: "soft" })).toEqual({
+      ok: false,
+      reason: "not-writable",
+    });
+    expect((await lstat(path)).isSymbolicLink()).toBe(true);
+    expect(await readJson(target)).toMatchObject({ theme: "retro", future: true });
+  });
+
+  it.each([
+    ["nonregular", 0, false],
+    ["oversized", CONFIG_MAX_BYTES + 1, true],
+  ] as const)(
+    "rejects injected %s filesystem objects without opening them",
+    async (_name, size, isFile) => {
+      const path = await temporaryConfigPath();
+      const openSpy = vi.fn<ConfigurationFileSystem["open"]>();
+      const fileSystem: ConfigurationFileSystem = {
+        ...realFileSystem,
+        lstat: () =>
+          Promise.resolve({
+            size,
+            dev: 1,
+            ino: 1,
+            isSymbolicLink: () => false,
+            isFile: () => isFile,
+          }),
+        open: openSpy,
+      };
+      const store = new ConfigurationStore({ path, fileSystem });
+
+      expect(await store.load()).toMatchObject({
+        classification: "unreadable",
+        warning: "unreadable",
+        configuration: DEFAULT_CONFIGURATION,
+      });
+      expect(await store.mutate({ theme: "soft" })).toEqual({
+        ok: false,
+        reason: "not-writable",
+      });
+      expect(openSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it("bounds handle reads when a regular file grows after its initial stat", async () => {
+    const path = await temporaryConfigPath();
+    await writeConfig(path, { version: 1, theme: "core" });
+    const fileSystem: ConfigurationFileSystem = {
+      ...realFileSystem,
+      open: async (openedPath, flags, mode) => {
+        const handle = await open(openedPath, flags, mode);
+        if (openedPath !== path || flags === "wx") return handle;
+        return {
+          read: (buffer, offset, length) => {
+            const bytesRead = Math.min(length, CONFIG_MAX_BYTES + 1 - offset);
+            buffer.fill(0x20, offset, offset + bytesRead);
+            return Promise.resolve({ bytesRead });
+          },
+          stat: () => handle.stat(),
+          writeFile: (data, encoding) => handle.writeFile(data, encoding),
+          sync: () => handle.sync(),
+          close: () => handle.close(),
+        };
+      },
+    };
+    const store = new ConfigurationStore({ path, fileSystem });
+
+    expect(await store.load()).toMatchObject({ classification: "unreadable" });
+    expect(await store.mutate({ theme: "soft" })).toEqual({
+      ok: false,
+      reason: "not-writable",
+    });
+  });
+
+  it("does not emit stdout or stderr while loading malformed content", async () => {
+    const path = await temporaryConfigPath();
+    await writeConfig(path, "{");
+    const stdout = vi.spyOn(process.stdout, "write");
+    const stderr = vi.spyOn(process.stderr, "write");
+
+    expect(await new ConfigurationStore({ path }).load()).toMatchObject({
+      classification: "malformed",
+    });
+    expect(stdout).not.toHaveBeenCalled();
+    expect(stderr).not.toHaveBeenCalled();
+  });
+
   it("classifies unreadable paths without leaking filesystem errors and rejects writes", async () => {
     const path = await temporaryConfigPath();
     await writeConfig(path, { version: 1, theme: "retro" });
@@ -151,7 +258,7 @@ describe("configuration loading and validation", () => {
     const stderr = vi.spyOn(process.stderr, "write");
     const fileSystem: ConfigurationFileSystem = {
       ...realFileSystem,
-      readFile: async () =>
+      open: async () =>
         Promise.reject(Object.assign(new Error("private path"), { code: "EACCES" })),
     };
     const store = new ConfigurationStore({ path, fileSystem });
@@ -243,9 +350,11 @@ describe("atomic configuration mutations", () => {
       ...realFileSystem,
       open: async (openedPath, flags, mode) => {
         const handle = await open(openedPath, flags, mode);
-        if (flags === "r") return handle;
+        if (flags !== "wx") return handle;
         temporaryPaths.push(openedPath);
         const wrapped: ConfigurationFileHandle = {
+          read: (buffer, offset, length, position) => handle.read(buffer, offset, length, position),
+          stat: () => handle.stat(),
           writeFile: async (data, encoding) => {
             expect((await readJson(path)).theme).toBe(themesBeforeWrite.shift());
             steps.push("write");
@@ -292,10 +401,13 @@ describe("atomic configuration mutations", () => {
         ...(failure === "rename"
           ? { rename: async () => Promise.reject(new Error("rename failed")) }
           : {
-              open: async (openedPath: string, flags: "wx" | "r", mode?: number) => {
+              open: async (openedPath: string, flags: "wx" | "r" | number, mode?: number) => {
                 const handle = await open(openedPath, flags, mode);
-                if (flags === "r") return handle;
+                if (flags !== "wx") return handle;
                 return {
+                  read: (buffer: Uint8Array, offset: number, length: number, position: number) =>
+                    handle.read(buffer, offset, length, position),
+                  stat: () => handle.stat(),
                   writeFile: async () => Promise.reject(new Error("write failed")),
                   sync: async () => handle.sync(),
                   close: async () => handle.close(),
@@ -305,6 +417,8 @@ describe("atomic configuration mutations", () => {
       };
       const store = new ConfigurationStore({ path, fileSystem });
       await store.load();
+      const stdout = vi.spyOn(process.stdout, "write");
+      const stderr = vi.spyOn(process.stderr, "write");
 
       expect(await store.mutate({ theme: "soft" })).toEqual({
         ok: false,
@@ -312,8 +426,39 @@ describe("atomic configuration mutations", () => {
       });
       expect(store.current.configuration.theme).toBe("retro");
       expect((await readJson(path)).theme).toBe("retro");
+      expect(stdout).not.toHaveBeenCalled();
+      expect(stderr).not.toHaveBeenCalled();
     },
   );
+
+  it("rejects and preserves a symlink introduced immediately before rename", async () => {
+    const path = await temporaryConfigPath();
+    const original = join(path, "..", "original.json");
+    const target = join(path, "..", "target.json");
+    await writeConfig(path, { version: 1, theme: "core" });
+    await writeConfig(target, { version: 1, theme: "retro" });
+    let targetLstats = 0;
+    const fileSystem: ConfigurationFileSystem = {
+      ...realFileSystem,
+      lstat: async (checkedPath) => {
+        if (checkedPath === path && ++targetLstats === 2) {
+          await rename(path, original);
+          await symlink(target, path);
+        }
+        return lstat(checkedPath);
+      },
+    };
+    const store = new ConfigurationStore({ path, fileSystem });
+
+    expect(await store.mutate({ theme: "soft" })).toEqual({
+      ok: false,
+      reason: "not-writable",
+    });
+    expect((await lstat(path)).isSymbolicLink()).toBe(true);
+    expect((await readJson(target)).theme).toBe("retro");
+    expect((await readJson(original)).theme).toBe("core");
+    expect(store.current.configuration.theme).toBe("core");
+  });
 
   it("rejects invalid complete merges without touching disk or memory", async () => {
     const path = await temporaryConfigPath();
