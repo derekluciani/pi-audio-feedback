@@ -411,11 +411,29 @@ async function listRelativeFiles(directory: string, prefix = ""): Promise<string
   return files.flat().sort();
 }
 
-export async function verifyAssets(): Promise<void> {
-  const expectedAssets = await renderAssets();
+export type AssetVerificationOptions = {
+  /** Regenerate WAVs and require pinned-renderer byte identity. Pinned CI must enable this. */
+  reproduce?: boolean;
+};
+
+function expectedAssetPaths(patches: Record<Theme, Patch>): string[] {
+  const sounds = mappedSounds(patches);
+  return THEMES.flatMap((theme) =>
+    [...sounds[theme].keys()]
+      .sort((left, right) => left.localeCompare(right))
+      .map((patchName) => `assets/wav/${theme}/${patchName}.wav`),
+  );
+}
+
+/**
+ * Validate authoritative patch inputs and committed WAV artifacts on any supported host.
+ * Rendering is opt-in because byte identity is guaranteed only by the pinned Linux toolchain.
+ */
+export async function verifyAssets(options: AssetVerificationOptions = {}): Promise<void> {
+  const patches = await readPatches();
+  const expectedPaths = expectedAssetPaths(patches);
   const rawManifest = await readFile(WAV_MANIFEST_PATH, "utf8");
   const manifest = parseAssetManifest(parseJson(rawManifest, WAV_MANIFEST_PATH));
-  const expectedPaths = expectedAssets.map((asset) => asset.path).sort();
   const expectedDiskPaths = [
     "manifest.json",
     ...expectedPaths.map((path) => path.slice("assets/wav/".length)),
@@ -425,23 +443,37 @@ export async function verifyAssets(): Promise<void> {
     throw new Error("Committed WAV directory contains missing or unexpected files");
   }
   const manifestPaths = Object.keys(manifest.files).sort();
-  if (JSON.stringify(manifestPaths) !== JSON.stringify(expectedPaths)) {
+  if (!isDeepStrictEqual(manifestPaths, [...expectedPaths].sort())) {
     throw new Error("WAV manifest paths do not exactly match the approved mapping outputs");
   }
-  if (rawManifest !== serializeManifest(expectedAssets)) {
-    throw new Error("WAV manifest is not byte-identical to deterministic regeneration");
-  }
-  for (const regenerated of expectedAssets) {
-    const committedPath = join(PROJECT_ROOT, regenerated.path);
-    const committed = await readFile(committedPath);
-    validateWav(committed, regenerated.path);
+
+  const committedAssets: GeneratedAsset[] = [];
+  for (const path of expectedPaths) {
+    const committed = await readFile(join(PROJECT_ROOT, path));
+    validateWav(committed, path);
     const checksum = sha256(committed);
-    if (checksum !== manifest.files[regenerated.path]) {
-      throw new Error(`WAV checksum mismatch: ${regenerated.path}`);
+    if (checksum !== manifest.files[path]) {
+      throw new Error(`WAV checksum mismatch: ${path}`);
     }
-    if (!committed.equals(regenerated.bytes)) {
+    committedAssets.push({ path, bytes: committed });
+  }
+  if (rawManifest !== serializeManifest(committedAssets)) {
+    throw new Error("WAV manifest is not in canonical form or does not match committed WAVs");
+  }
+
+  if (options.reproduce !== true) {
+    return;
+  }
+
+  const regeneratedAssets = await renderAssets();
+  if (rawManifest !== serializeManifest(regeneratedAssets)) {
+    throw new Error("WAV manifest is not byte-identical to pinned deterministic regeneration");
+  }
+  for (const regenerated of regeneratedAssets) {
+    const committed = committedAssets.find((asset) => asset.path === regenerated.path);
+    if (committed === undefined || !Buffer.from(committed.bytes).equals(regenerated.bytes)) {
       throw new Error(
-        `WAV is not byte-identical to deterministic regeneration: ${regenerated.path}`,
+        `WAV is not byte-identical to pinned deterministic regeneration: ${regenerated.path}`,
       );
     }
   }

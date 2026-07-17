@@ -15,6 +15,7 @@
   "scripts": {
     "assets:generate": "tsx scripts/assets/generate.ts",
     "assets:verify": "tsx scripts/assets/verify.ts",
+    "assets:verify:reproduce": "tsx scripts/assets/verify-reproduction.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

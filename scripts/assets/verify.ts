@@ -1,4 +1,4 @@
 import { verifyAssets } from "./pipeline.js";
 
 await verifyAssets();
-console.log("Verified patch provenance and deterministic themed WAV assets.");
+console.log("Verified patch provenance, mappings, and committed themed WAV assets.");

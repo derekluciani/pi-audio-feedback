@@ -39,7 +39,8 @@ jobs:
           node-version: 22.23.1
           cache: npm
       - run: npm ci
-      - run: npm run assets:verify
+      # Byte-identical rendering is intentionally restricted to this pinned environment.
+      - run: npm run assets:verify:reproduce
 
   minimum-pi-compatibility:
     name: Minimum Pi 0.80.6 compatibility

@@ -76,7 +76,25 @@ describe("deterministic asset pipeline", () => {
     expect(calculateDurationMs(definition)).toBe(1_750);
   });
 
-  it("verifies headers, mapped paths, checksums, and byte-identical regeneration", async () => {
+  it("verifies committed headers, mapped paths, and checksums without regeneration", async () => {
     await expect(verifyAssets()).resolves.toBeUndefined();
+  });
+
+  it("keeps byte-identical regeneration explicit in pinned CI", async () => {
+    const packageSource = await readFile(new URL("../package.json", import.meta.url), "utf8");
+    const packageManifest: unknown = JSON.parse(packageSource);
+    const scripts = objectValue(packageManifest, "scripts");
+    expect(objectValue(scripts, "assets:verify")).toBe("tsx scripts/assets/verify.ts");
+    expect(objectValue(scripts, "assets:verify:reproduce")).toBe(
+      "tsx scripts/assets/verify-reproduction.ts",
+    );
+
+    const workflow = await readFile(
+      new URL("../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+    expect(workflow).toContain("Deterministic assets (Ubuntu 24.04, Node 22.23.1)");
+    expect(workflow).toContain("node-version: 22.23.1");
+    expect(workflow).toContain("npm run assets:verify:reproduce");
   });
 });
