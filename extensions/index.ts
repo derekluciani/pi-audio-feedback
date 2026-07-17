@@ -17,3 +17,5 @@ export * from "./audio-catalog.js";
 export * from "./eligibility.js";
 
 export * from "./scheduler.js";
+
+export * from "./terminal-outcomes.js";

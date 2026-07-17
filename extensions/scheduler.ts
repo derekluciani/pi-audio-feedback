@@ -207,6 +207,7 @@ export class AudioScheduler {
       this.#toolErrorWindowStart = now;
     }
 
+    this.#purgeExpiredPending(now);
     if (this.#playing === null && !this.#draining) {
       this.#pending = request;
       await this.#drainPending();
@@ -236,6 +237,16 @@ export class AudioScheduler {
       }
     }
     this.#children.clear();
+  }
+
+  #purgeExpiredPending(now: number): void {
+    if (
+      this.#pending !== null &&
+      this.#pending.event !== "agentSettled" &&
+      now - this.#pending.requestedAt >= PENDING_EXPIRY_MS
+    ) {
+      this.#pending = null;
+    }
   }
 
   async #drainPending(): Promise<void> {
@@ -280,7 +291,9 @@ export class AudioScheduler {
     if (this.#shutdown || this.#playing !== record) return;
     if (!eligibility.launchable) {
       this.#playing = null;
-      this.#notifyPreview(request, "validation");
+      if (eligibility.reason === "missing-wav" || eligibility.reason === "missing-helper") {
+        this.#notifyPreview(request, "validation");
+      }
       return;
     }
 
@@ -307,19 +320,33 @@ export class AudioScheduler {
     try {
       child = this.#options.launchPlayer(eligibility);
     } catch {
-      this.#playing = null;
+      if (this.#playing === record) this.#playing = null;
       this.#notifyPreview(request, "spawn-throw");
+      return;
+    }
+
+    // launchPlayer is an injected process boundary and may reenter shutdown before returning.
+    if (!this.#canContinue(record)) {
+      this.#killChild(child);
       return;
     }
     record.child = child;
     this.#children.add(child);
 
+    const installed = { error: false, spawn: false, close: false };
     const onSpawn = (): void => {
-      if (record.settled || this.#playing !== record) return;
+      if (record.settled || this.#playing !== record || record.spawned) return;
       record.spawned = true;
-      record.watchdog = this.#options.timers.setTimeout(() => {
+      const timerState = { firedSynchronously: false };
+      const handle = this.#options.timers.setTimeout(() => {
+        timerState.firedSynchronously = true;
         this.#settle(record, true);
       }, durationMs + WATCHDOG_GRACE_MS);
+      if (timerState.firedSynchronously || !this.#canContinue(record)) {
+        this.#options.timers.clearTimeout(handle);
+      } else {
+        record.watchdog = handle;
+      }
     };
     const onError = (): void => {
       if (!record.spawned) this.#notifyPreview(request, "pre-spawn-error");
@@ -328,14 +355,33 @@ export class AudioScheduler {
     const onClose = (): void => {
       this.#settle(record, false);
     };
-    child.on("error", onError);
-    child.on("spawn", onSpawn);
-    child.on("close", onClose);
-    record.removeListeners = () => {
-      child.removeListener("error", onError);
-      child.removeListener("spawn", onSpawn);
-      child.removeListener("close", onClose);
+    const removeInstalledListeners = (): void => {
+      if (installed.error) child.removeListener("error", onError);
+      if (installed.spawn) child.removeListener("spawn", onSpawn);
+      if (installed.close) child.removeListener("close", onClose);
+      installed.error = false;
+      installed.spawn = false;
+      installed.close = false;
     };
+    record.removeListeners = removeInstalledListeners;
+
+    installed.error = true;
+    child.on("error", onError);
+    if (!this.#canContinue(record)) return;
+    installed.spawn = true;
+    child.on("spawn", onSpawn);
+    if (!this.#canContinue(record)) return;
+    installed.close = true;
+    child.on("close", onClose);
+    if (!this.#canContinue(record)) removeInstalledListeners();
+  }
+
+  #killChild(child: SchedulerChild): void {
+    try {
+      child.kill();
+    } catch {
+      // Direct-child termination is explicitly best effort.
+    }
   }
 
   #canContinue(record: PlayingRecord): boolean {

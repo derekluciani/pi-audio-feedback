@@ -14,6 +14,7 @@ import {
   type AudioSchedulerOptions,
   type SchedulerChild,
 } from "../extensions/scheduler.js";
+import { TerminalOutcomeRequestAdapter } from "../extensions/terminal-outcomes.js";
 
 class FakeChild extends EventEmitter implements SchedulerChild {
   readonly kill = vi.fn(() => true);
@@ -28,6 +29,7 @@ interface Harness {
   children: FakeChild[];
   notices: string[];
   timerDelays: number[];
+  activeTimerCount(): number;
   fireTimer(index?: number): void;
   scheduler: AudioScheduler;
 }
@@ -95,6 +97,7 @@ function makeHarness(overrides: Partial<AudioSchedulerOptions> = {}): Harness {
     children,
     notices,
     timerDelays,
+    activeTimerCount: () => timerCallbacks.size,
     fireTimer: (index = 0) => timerCallbacks.get(index)?.(),
     scheduler,
   };
@@ -190,14 +193,23 @@ describe("debounce, expiry, and launch-time exceptions", () => {
     expect(await h.scheduler.request("toolError")).toBe("accepted");
   });
 
-  it("expires ordinary pending at 2000ms but preserves completion", async () => {
-    const ordinary = makeHarness();
-    await ordinary.scheduler.request("appStart");
-    await ordinary.scheduler.request("agentStart");
-    ordinary.now.value = 2_000;
-    close(childAt(ordinary, 0));
+  it("purges ordinary pending at the exact 2000ms comparison boundary", async () => {
+    const beforeBoundary = makeHarness();
+    await beforeBoundary.scheduler.request("appStart");
+    await beforeBoundary.scheduler.request("agentAborted");
+    beforeBoundary.now.value = 1_999;
+    expect(await beforeBoundary.scheduler.request("settingsNavigate")).toBe("discarded");
+    expect(beforeBoundary.scheduler.pendingEvent).toBe("agentAborted");
+
+    const atBoundary = makeHarness();
+    await atBoundary.scheduler.request("appStart");
+    await atBoundary.scheduler.request("agentAborted");
+    atBoundary.now.value = 2_000;
+    expect(await atBoundary.scheduler.request("settingsNavigate")).toBe("accepted");
+    expect(atBoundary.scheduler.pendingEvent).toBe("settingsNavigate");
+    close(childAt(atBoundary, 0));
     await settle();
-    expect(ordinary.starts).toEqual(["appStart:core"]);
+    expect(atBoundary.starts).toEqual(["appStart:core", "settingsNavigate:core"]);
 
     const completion = makeHarness();
     await completion.scheduler.request("appStart");
@@ -217,9 +229,17 @@ describe("debounce, expiry, and launch-time exceptions", () => {
     await settle();
     expect(h.starts).toEqual(["appStart:core", "agentStart:soft"]);
 
+    close(childAt(h, 1));
+    await h.scheduler.request("settingsNavigate");
+    await h.scheduler.request("agentStart");
+    h.enabled.agentStart = false;
+    close(childAt(h, 2));
+    await settle();
+    expect(h.starts).toEqual(["appStart:core", "agentStart:soft", "settingsNavigate:soft"]);
+
     await h.scheduler.request("settingsThemePreview", { themeOverride: "organic" });
     h.theme.value = "core";
-    close(childAt(h, 1));
+    close(childAt(h, 3));
     await settle();
     expect(h.starts.at(-1)).toBe("settingsThemePreview:organic");
     expect(await h.scheduler.request("appStart", { themeOverride: "soft" })).toBe("invalid");
@@ -264,17 +284,52 @@ describe("child lifecycle, preview notices, watchdog, and shutdown", () => {
     await first;
     await settle();
     expect(h.starts).toEqual(["agentSettled:core"]);
+    expect(h.notices).toEqual([]);
     expect(h.scheduler.trackedChildCount).toBe(1);
     close(childAt(h, 0), 7);
     expect(h.scheduler.trackedChildCount).toBe(0);
   });
 
-  it("notices only preview pre-spawn failures and stays silent post-spawn", async () => {
-    const validation = makeHarness({
+  it("notices only approved preview pre-spawn failures and stays silent post-spawn", async () => {
+    for (const reason of ["missing-wav", "missing-helper"] as const) {
+      const validation = makeHarness({
+        resolveEligibility: () => Promise.resolve({ launchable: false, reason }),
+      });
+      await validation.scheduler.request("settingsThemePreview", { themeOverride: "soft" });
+      expect(validation.notices).toEqual(["validation"]);
+    }
+
+    for (const reason of [
+      "invalid-request",
+      "invalid-event",
+      "invalid-theme-override",
+      "invalid-toggle-policy",
+      "invalid-configuration",
+      "non-tui",
+      "ci",
+      "ssh",
+      "unsupported-platform",
+      "disabled",
+      "missing-mapping",
+    ] as const) {
+      const suppression = makeHarness({
+        resolveEligibility: () => Promise.resolve({ launchable: false, reason }),
+      });
+      await suppression.scheduler.request("settingsThemePreview", { themeOverride: "soft" });
+      expect(suppression.notices, reason).toEqual([]);
+    }
+
+    const automatic = makeHarness({
       resolveEligibility: () => Promise.resolve({ launchable: false, reason: "missing-wav" }),
     });
-    await validation.scheduler.request("settingsThemePreview", { themeOverride: "soft" });
-    expect(validation.notices).toEqual(["validation"]);
+    await automatic.scheduler.request("agentStart");
+    expect(automatic.notices).toEqual([]);
+
+    const rejected = makeHarness({
+      resolveEligibility: () => Promise.reject(new Error("invalid resolver input")),
+    });
+    await rejected.scheduler.request("settingsThemePreview", { themeOverride: "soft" });
+    expect(rejected.notices).toEqual([]);
 
     const preSpawn = makeHarness();
     await preSpawn.scheduler.request("settingsThemePreview", { themeOverride: "soft" });
@@ -289,6 +344,100 @@ describe("child lifecycle, preview notices, watchdog, and shutdown", () => {
     expect(postSpawn.notices).toEqual([]);
   });
 
+  it("kills an untracked child returned after reentrant shutdown", async () => {
+    const child = new FakeChild();
+    const holder: { scheduler: AudioScheduler | null } = { scheduler: null };
+    const h = makeHarness({
+      launchPlayer: () => {
+        holder.scheduler?.shutdown();
+        return child;
+      },
+    });
+    const scheduler = h.scheduler;
+    holder.scheduler = scheduler;
+    await scheduler.request("appStart");
+    expect(child.kill).toHaveBeenCalledOnce();
+    expect(child.eventNames()).toEqual([]);
+    expect(scheduler.trackedChildCount).toBe(0);
+    expect(h.activeTimerCount()).toBe(0);
+  });
+
+  it("cleans and kills when shutdown reenters during listener registration", async () => {
+    const holder: { scheduler: AudioScheduler | null } = { scheduler: null };
+    class ShutdownRegistrationChild extends FakeChild {
+      override on(event: "spawn", listener: () => void): this;
+      override on(event: "error", listener: (error: Error) => void): this;
+      override on(
+        event: "close",
+        listener: (code: number | null, signal: NodeJS.Signals | null) => void,
+      ): this;
+      override on(event: string, listener: Parameters<EventEmitter["on"]>[1]): this {
+        super.on(event, listener);
+        holder.scheduler?.shutdown();
+        return this;
+      }
+    }
+
+    const child = new ShutdownRegistrationChild();
+    const h = makeHarness({ launchPlayer: () => child });
+    holder.scheduler = h.scheduler;
+    await h.scheduler.request("appStart");
+    expect(child.kill).toHaveBeenCalledOnce();
+    expect(child.eventNames()).toEqual([]);
+    expect(h.scheduler.trackedChildCount).toBe(0);
+    expect(h.activeTimerCount()).toBe(0);
+  });
+
+  it("incrementally cleans synchronous listener settlement and event orderings", async () => {
+    class RegistrationChild extends FakeChild {
+      readonly #during: (event: string, child: RegistrationChild) => void;
+
+      constructor(during: (event: string, child: RegistrationChild) => void) {
+        super();
+        this.#during = during;
+      }
+
+      override on(event: "spawn", listener: () => void): this;
+      override on(event: "error", listener: (error: Error) => void): this;
+      override on(
+        event: "close",
+        listener: (code: number | null, signal: NodeJS.Signals | null) => void,
+      ): this;
+      override on(event: string, listener: Parameters<EventEmitter["on"]>[1]): this {
+        super.on(event, listener);
+        this.#during(event, this);
+        return this;
+      }
+    }
+
+    const scenarios: Array<(event: string, child: RegistrationChild) => void> = [
+      (event, child) => {
+        if (event === "error") {
+          child.emit("error", new Error("sync"));
+          child.emit("close", 1, null);
+        }
+      },
+      (event, child) => {
+        if (event === "spawn") {
+          child.emit("spawn");
+          child.emit("error", new Error("after spawn"));
+        }
+      },
+      (event, child) => {
+        if (event === "close") child.emit("close", 0, null);
+      },
+    ];
+
+    for (const during of scenarios) {
+      const child = new RegistrationChild(during);
+      const h = makeHarness({ launchPlayer: () => child });
+      await h.scheduler.request("settingsThemePreview", { themeOverride: "soft" });
+      expect(child.eventNames()).toEqual([]);
+      expect(h.scheduler.trackedChildCount).toBe(0);
+      expect(h.activeTimerCount()).toBe(0);
+    }
+  });
+
   it("arms duration+2000 watchdog, kills only the running child, and starts pending", async () => {
     const h = makeHarness();
     await h.scheduler.request("appStart");
@@ -298,6 +447,8 @@ describe("child lifecycle, preview notices, watchdog, and shutdown", () => {
     h.fireTimer();
     await settle();
     expect(childAt(h, 0).kill).toHaveBeenCalledOnce();
+    expect(childAt(h, 0).eventNames()).toEqual([]);
+    expect(h.activeTimerCount()).toBe(0);
     expect(h.starts).toEqual(["appStart:core", "agentSettled:core"]);
   });
 
@@ -315,33 +466,56 @@ describe("child lifecycle, preview notices, watchdog, and shutdown", () => {
     expect(h.starts).toEqual(["appStart:core"]);
   });
 
-  it("ignores kill failures during shutdown", async () => {
+  it("cleans active listeners and timers while ignoring shutdown kill failures", async () => {
     const h = makeHarness();
     await h.scheduler.request("appStart");
-    childAt(h, 0).kill.mockImplementation(() => {
+    const child = childAt(h, 0);
+    child.emit("spawn");
+    child.kill.mockImplementation(() => {
       throw new Error("gone");
     });
     expect(() => {
       h.scheduler.shutdown();
     }).not.toThrow();
+    expect(child.eventNames()).toEqual([]);
+    expect(h.activeTimerCount()).toBe(0);
+    expect(h.scheduler.trackedChildCount).toBe(0);
   });
 });
 
-describe("terminal request-driving fixtures", () => {
-  function terminalRequests(input: {
-    starts: number;
-    escapeDuringRun?: boolean;
-    assistantStopReason?: unknown;
-  }): AudioEvent[] {
-    const events: AudioEvent[] = Array.from({ length: input.starts }, () => "agentStart");
-    const confirmedAbort =
-      input.escapeDuringRun === true && input.assistantStopReason === "aborted";
-    events.push(confirmedAbort ? "agentAborted" : "agentSettled");
-    return events;
+describe("production terminal-outcome request adapter", () => {
+  function makeTerminalHarness(): {
+    harness: Harness;
+    adapter: TerminalOutcomeRequestAdapter;
+    requestSequence: AudioEvent[];
+  } {
+    const harness = makeHarness();
+    const requestSequence: AudioEvent[] = [];
+    const adapter = new TerminalOutcomeRequestAdapter({
+      request: async (event) => {
+        requestSequence.push(event);
+        return harness.scheduler.request(event);
+      },
+    });
+    return { harness, adapter, requestSequence };
   }
 
-  it("counts retry, compaction, steering, and queued follow-up starts with one final settlement", () => {
-    expect(terminalRequests({ starts: 5 })).toEqual([
+  async function finishCurrent(harness: Harness): Promise<void> {
+    const child = harness.children.at(-1);
+    if (child === undefined) throw new Error("Expected current production scheduler child");
+    close(child);
+    await settle();
+  }
+
+  it("drives exact retry, auto-compaction, steering, follow-up, and final sequences", async () => {
+    const { harness, adapter, requestSequence } = makeTerminalHarness();
+    for (const boundary of ["initial", "retry", "auto-compaction", "steering", "follow-up"]) {
+      await adapter.onAgentStart();
+      expect(boundary).toBeTruthy();
+      await finishCurrent(harness);
+    }
+    await adapter.onAgentSettled();
+    expect(requestSequence).toEqual([
       "agentStart",
       "agentStart",
       "agentStart",
@@ -349,19 +523,34 @@ describe("terminal request-driving fixtures", () => {
       "agentStart",
       "agentSettled",
     ]);
+    expect(harness.starts).toEqual(requestSequence.map((event) => `${event}:core`));
   });
 
-  it("ignores Escape while idle/settings and Escape with non-aborted final message", () => {
-    expect(terminalRequests({ starts: 1 })).toEqual(["agentStart", "agentSettled"]);
-    expect(
-      terminalRequests({ starts: 1, escapeDuringRun: true, assistantStopReason: "stop" }),
-    ).toEqual(["agentStart", "agentSettled"]);
+  it("ignores literal Escape while idle/settings and for non-aborted outcomes", async () => {
+    const { harness, adapter, requestSequence } = makeTerminalHarness();
+    adapter.onLiteralEscape();
+    adapter.onLiteralEscape();
+    await adapter.onAgentStart();
+    adapter.onLiteralEscape();
+    adapter.onAgentEnd([{ role: "assistant", stopReason: "stop" }]);
+    await finishCurrent(harness);
+    await adapter.onAgentSettled();
+    expect(requestSequence).toEqual(["agentStart", "agentSettled"]);
+    expect(harness.starts).toEqual(["agentStart:core", "agentSettled:core"]);
   });
 
-  it("emits one abort and no completion only for confirmed literal-Escape abort", () => {
-    expect(
-      terminalRequests({ starts: 1, escapeDuringRun: true, assistantStopReason: "aborted" }),
-    ).toEqual(["agentStart", "agentAborted"]);
+  it("requests one abort and no completion only for literal-Escape confirmed abort", async () => {
+    const { harness, adapter, requestSequence } = makeTerminalHarness();
+    await adapter.onAgentStart();
+    adapter.onLiteralEscape();
+    adapter.onAgentEnd([
+      { role: "assistant", stopReason: "stop" },
+      { role: "assistant", stopReason: "aborted" },
+    ]);
+    await finishCurrent(harness);
+    await adapter.onAgentSettled();
+    expect(requestSequence).toEqual(["agentStart", "agentAborted"]);
+    expect(harness.starts).toEqual(["agentStart:core", "agentAborted:core"]);
   });
 });
 
