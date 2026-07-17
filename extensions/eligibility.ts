@@ -1,4 +1,5 @@
-import { stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, lstat } from "node:fs/promises";
 import { release } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -70,10 +71,12 @@ export interface PackagedAudioPaths {
 
 interface FileStats {
   isFile(): boolean;
+  isSymbolicLink(): boolean;
 }
 
 export interface EligibilityFileSystem {
-  stat(path: string): Promise<FileStats>;
+  lstat(path: string): Promise<FileStats>;
+  access(path: string, mode: number): Promise<void>;
 }
 
 export interface AudioEligibilityOptions {
@@ -86,6 +89,21 @@ export interface AudioEligibilityOptions {
   readonly moduleUrl?: string;
   readonly fileSystem?: EligibilityFileSystem;
 }
+
+const acceptedRequestBrand: unique symbol = Symbol("acceptedSettingsToggleOffRequest");
+
+/**
+ * Opaque scheduler request created only after the runtime verifies the toggle at acceptance time.
+ * Runtime authenticity is held separately in a module-private WeakSet, so matching object fields
+ * or TypeScript assertions cannot forge acceptance.
+ */
+export interface AcceptedSettingsToggleOffRequest {
+  readonly event: "settingsToggleOff";
+  readonly togglePolicy: "accepted";
+  readonly [acceptedRequestBrand]: true;
+}
+
+const authenticAcceptedRequests = new WeakSet();
 
 interface ParsedRequest {
   readonly event: AudioEvent;
@@ -128,14 +146,50 @@ export function resolvePackagedAudioPaths(moduleUrl: string = import.meta.url): 
   };
 }
 
+function isConfiguration(value: unknown): value is AudioFeedbackConfiguration {
+  if (!isRecord(value) || value.version !== 1 || !isAudioTheme(value.theme)) return false;
+  const events = value.events;
+  if (!isRecord(events)) return false;
+  return AUDIO_EVENTS.every((event) => typeof events[event] === "boolean");
+}
+
+/**
+ * Accept the sole PRD-approved pre-save snapshot using the runtime's current configuration.
+ * A null result means the configuration is invalid/unavailable or settingsToggleOff is disabled.
+ */
+export function acceptSettingsToggleOffRequest(
+  getCurrentConfiguration: () => unknown,
+): AcceptedSettingsToggleOffRequest | null {
+  let configuration: unknown;
+  try {
+    configuration = getCurrentConfiguration();
+  } catch {
+    return null;
+  }
+  if (!isConfiguration(configuration) || !configuration.events.settingsToggleOff) return null;
+
+  // The brand is compile-time opacity; WeakSet membership is the runtime authenticity proof.
+  const request = Object.freeze({
+    event: "settingsToggleOff",
+    togglePolicy: "accepted",
+  }) as AcceptedSettingsToggleOffRequest;
+  authenticAcceptedRequests.add(request);
+  return request;
+}
+
 function parseRequest(request: unknown): ParsedRequest | IneligibilityReason {
   if (!isRecord(request)) return "invalid-request";
-  const allowedKeys = new Set(["event", "themeOverride", "togglePolicy", "enabledAtAcceptance"]);
+
+  if (authenticAcceptedRequests.has(request)) {
+    return { event: "settingsToggleOff", togglePolicy: "accepted", themeOverride: null };
+  }
+
+  const allowedKeys = new Set(["event", "themeOverride", "togglePolicy"]);
   if (Object.keys(request).some((key) => !allowedKeys.has(key))) return "invalid-request";
   if (!isAudioEvent(request.event)) return "invalid-event";
 
   const policy = request.togglePolicy ?? "launch";
-  if (policy !== "launch" && policy !== "accepted") return "invalid-toggle-policy";
+  if (policy !== "launch") return "invalid-toggle-policy";
 
   let themeOverride: AudioTheme | null = null;
   if (request.themeOverride !== undefined) {
@@ -145,24 +199,7 @@ function parseRequest(request: unknown): ParsedRequest | IneligibilityReason {
     themeOverride = request.themeOverride;
   }
 
-  if (
-    policy === "accepted" &&
-    (request.event !== "settingsToggleOff" || request.enabledAtAcceptance !== true)
-  ) {
-    return "invalid-toggle-policy";
-  }
-  if (policy === "launch" && request.enabledAtAcceptance !== undefined) {
-    return "invalid-toggle-policy";
-  }
-
   return { event: request.event, togglePolicy: policy, themeOverride };
-}
-
-function isConfiguration(value: unknown): value is AudioFeedbackConfiguration {
-  if (!isRecord(value) || value.version !== 1 || !isAudioTheme(value.theme)) return false;
-  const events = value.events;
-  if (!isRecord(events)) return false;
-  return AUDIO_EVENTS.every((event) => typeof events[event] === "boolean");
 }
 
 function isWsl(
@@ -176,13 +213,21 @@ function isWsl(
   );
 }
 
-async function isRegularFile(fileSystem: EligibilityFileSystem, path: string): Promise<boolean> {
+async function isReadableRegularFile(
+  fileSystem: EligibilityFileSystem,
+  path: string,
+): Promise<boolean> {
   try {
-    return (await fileSystem.stat(path)).isFile();
+    const metadata = await fileSystem.lstat(path);
+    if (metadata.isSymbolicLink() || !metadata.isFile()) return false;
+    await fileSystem.access(path, constants.R_OK);
+    return true;
   } catch {
     return false;
   }
 }
+
+const nodeFileSystem: EligibilityFileSystem = { lstat, access };
 
 /**
  * Evaluate every launch-time policy and resolve a packaged WAV for a scheduler request.
@@ -239,11 +284,14 @@ export async function resolveAudioEligibility(
     return { launchable: false, reason: "missing-mapping" };
   }
   const wavPath = resolve(paths.wavRoot, theme, `${patchName}.wav`);
-  const fileSystem = options.fileSystem ?? { stat };
-  if (!(await isRegularFile(fileSystem, wavPath))) {
+  const fileSystem = options.fileSystem ?? nodeFileSystem;
+  if (!(await isReadableRegularFile(fileSystem, wavPath))) {
     return { launchable: false, reason: "missing-wav" };
   }
-  if (platform === "win32" && !(await isRegularFile(fileSystem, paths.powershellHelperPath))) {
+  if (
+    platform === "win32" &&
+    !(await isReadableRegularFile(fileSystem, paths.powershellHelperPath))
+  ) {
     return { launchable: false, reason: "missing-helper" };
   }
 

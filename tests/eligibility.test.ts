@@ -1,4 +1,4 @@
-import { cp, mkdtemp, mkdir, rm } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -8,15 +8,17 @@ import {
   AUDIO_EVENTS,
   AUDIO_EVENT_PRIORITIES,
   AUDIO_THEMES,
-  CI_MARKERS,
-  DEFAULT_CONFIGURATION,
   EVENT_SOUND_MAPPING,
+} from "../extensions/audio-catalog.js";
+import { DEFAULT_CONFIGURATION, type AudioFeedbackConfiguration } from "../extensions/config.js";
+import {
+  CI_MARKERS,
+  acceptSettingsToggleOffRequest,
   hasActiveCiMarker,
   hasSshMarker,
   resolveAudioEligibility,
   resolvePackagedAudioPaths,
-  type AudioFeedbackConfiguration,
-} from "../extensions/index.js";
+} from "../extensions/eligibility.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -122,30 +124,37 @@ describe("launch-time eligibility", () => {
     ).resolves.toEqual({ launchable: false, reason: "invalid-theme-override" });
   });
 
-  it("allows only an enabled-at-acceptance toggle-off fact while rechecking other gates", async () => {
-    const accepted = {
-      event: "settingsToggleOff",
-      togglePolicy: "accepted",
-      enabledAtAcceptance: true,
-    };
+  it("accepts toggle-off only through a current-config-checked opaque request", async () => {
+    const accepted = acceptSettingsToggleOffRequest(() => configuration("core", true));
+    expect(accepted).not.toBeNull();
+    if (accepted === null) throw new TypeError("enabled toggle-off request was not accepted");
+
     const result = await resolveAudioEligibility(
       accepted,
       options(() => configuration("retro", false)),
     );
     expect(result).toMatchObject({ launchable: true, event: "settingsToggleOff", theme: "retro" });
 
+    expect(acceptSettingsToggleOffRequest(() => configuration("core", false))).toBeNull();
+    expect(
+      acceptSettingsToggleOffRequest(() => {
+        throw new Error("unavailable");
+      }),
+    ).toBeNull();
+
     await expect(
       resolveAudioEligibility(
-        { event: "settingsToggleOff", togglePolicy: "accepted", enabledAtAcceptance: false },
+        { event: "settingsToggleOff", togglePolicy: "accepted", enabledAtAcceptance: true },
         options(),
       ),
-    ).resolves.toEqual({ launchable: false, reason: "invalid-toggle-policy" });
+    ).resolves.toEqual({ launchable: false, reason: "invalid-request" });
     await expect(
-      resolveAudioEligibility(
-        { event: "appStart", togglePolicy: "accepted", enabledAtAcceptance: true },
-        options(),
-      ),
+      resolveAudioEligibility({ event: "settingsToggleOff", togglePolicy: "accepted" }, options()),
     ).resolves.toEqual({ launchable: false, reason: "invalid-toggle-policy" });
+    await expect(resolveAudioEligibility({ ...accepted }, options())).resolves.toEqual({
+      launchable: false,
+      reason: "invalid-toggle-policy",
+    });
     await expect(
       resolveAudioEligibility(accepted, { ...options(), environment: { CI: "1" } }),
     ).resolves.toEqual({ launchable: false, reason: "ci" });
@@ -173,7 +182,13 @@ describe("launch-time eligibility", () => {
     await expect(
       resolveAudioEligibility(
         { event: "appStart" },
-        { ...options(), fileSystem: { stat: () => Promise.reject(new Error("unavailable")) } },
+        {
+          ...options(),
+          fileSystem: {
+            lstat: () => Promise.reject(new Error("unavailable")),
+            access: () => Promise.resolve(),
+          },
+        },
       ),
     ).resolves.toEqual({ launchable: false, reason: "missing-wav" });
   });
@@ -223,5 +238,114 @@ describe("packaged paths", () => {
         { ...options(), platform: "win32", moduleUrl },
       ),
     ).resolves.toEqual({ launchable: false, reason: "missing-helper" });
+  });
+
+  it("rejects symlinked WAVs without following their targets", async () => {
+    const packageRoot = await mkdtemp(join(tmpdir(), "pi-audio-wav-link-"));
+    temporaryDirectories.push(packageRoot);
+    await mkdir(join(packageRoot, "extensions"), { recursive: true });
+    await mkdir(join(packageRoot, "assets", "wav", "core"), { recursive: true });
+    const outsideWav = join(packageRoot, "outside.wav");
+    await cp(resolve("assets/wav/core/success.wav"), outsideWav);
+    await symlink(outsideWav, join(packageRoot, "assets", "wav", "core", "success.wav"));
+
+    await expect(
+      resolveAudioEligibility(
+        { event: "appStart" },
+        {
+          ...options(),
+          moduleUrl: pathToFileURL(join(packageRoot, "extensions", "eligibility.ts")).href,
+        },
+      ),
+    ).resolves.toEqual({ launchable: false, reason: "missing-wav" });
+  });
+
+  it("rejects symlinked PowerShell helpers without following their targets", async () => {
+    const packageRoot = await mkdtemp(join(tmpdir(), "pi-audio-helper-link-"));
+    temporaryDirectories.push(packageRoot);
+    await mkdir(join(packageRoot, "extensions"), { recursive: true });
+    await mkdir(join(packageRoot, "assets", "wav", "core"), { recursive: true });
+    await mkdir(join(packageRoot, "scripts"), { recursive: true });
+    await cp(
+      resolve("assets/wav/core/success.wav"),
+      join(packageRoot, "assets", "wav", "core", "success.wav"),
+    );
+    const outsideHelper = join(packageRoot, "outside.ps1");
+    await cp(resolve("scripts/play-wav.ps1"), outsideHelper);
+    await symlink(outsideHelper, join(packageRoot, "scripts", "play-wav.ps1"));
+
+    await expect(
+      resolveAudioEligibility(
+        { event: "appStart" },
+        {
+          ...options(),
+          platform: "win32",
+          moduleUrl: pathToFileURL(join(packageRoot, "extensions", "eligibility.ts")).href,
+        },
+      ),
+    ).resolves.toEqual({ launchable: false, reason: "missing-helper" });
+  });
+
+  it.each([
+    ["nonregular", { isFile: (): boolean => false, isSymbolicLink: (): boolean => false }, false],
+    ["unreadable", { isFile: (): boolean => true, isSymbolicLink: (): boolean => false }, true],
+  ] as const)("rejects a %s PowerShell helper", async (_case, helperStats, rejectAccess) => {
+    let metadataCalls = 0;
+    await expect(
+      resolveAudioEligibility(
+        { event: "appStart" },
+        {
+          ...options(),
+          platform: "win32",
+          fileSystem: {
+            lstat: () => {
+              metadataCalls += 1;
+              return Promise.resolve(
+                metadataCalls === 1
+                  ? { isFile: (): boolean => true, isSymbolicLink: (): boolean => false }
+                  : helperStats,
+              );
+            },
+            access: () =>
+              metadataCalls === 2 && rejectAccess
+                ? Promise.reject(new Error("EACCES"))
+                : Promise.resolve(),
+          },
+        },
+      ),
+    ).resolves.toEqual({ launchable: false, reason: "missing-helper" });
+  });
+
+  it("rejects nonregular and unreadable packaged files", async () => {
+    const directoryStats = {
+      isFile: () => false,
+      isSymbolicLink: () => false,
+    };
+    await expect(
+      resolveAudioEligibility(
+        { event: "appStart" },
+        {
+          ...options(),
+          fileSystem: {
+            lstat: () => Promise.resolve(directoryStats),
+            access: () => Promise.resolve(),
+          },
+        },
+      ),
+    ).resolves.toEqual({ launchable: false, reason: "missing-wav" });
+
+    const fileStats = { isFile: (): boolean => true, isSymbolicLink: (): boolean => false };
+    await expect(
+      resolveAudioEligibility(
+        { event: "appStart" },
+        {
+          ...options(),
+          fileSystem: {
+            lstat: () => Promise.resolve(fileStats),
+            access: () => Promise.reject(new Error("EACCES")),
+          },
+        },
+      ),
+    ).resolves.toEqual({ launchable: false, reason: "missing-wav" });
   });
 });
