@@ -10,6 +10,19 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@earendil-works/pi-coding-agent", () => ({
+  DynamicBorder: class {
+    readonly #color: (text: string) => string;
+
+    constructor(color: (text: string) => string = (text) => text) {
+      this.#color = color;
+    }
+
+    render(width: number): string[] {
+      return [this.#color("─".repeat(Math.max(0, width)))];
+    }
+
+    invalidate(): void {}
+  },
   getAgentDir: (): string => "/supplied/pi-agent",
 }));
 
@@ -32,12 +45,18 @@ interface TestComponent {
   handleInput?(data: string): void;
 }
 
+interface CustomInvocationOptions {
+  readonly overlay?: boolean;
+  readonly overlayOptions?: unknown;
+  readonly onHandle?: (handle: { focus(): void }) => void;
+}
+
 interface ExtensionHarness {
   readonly hooks: Map<string, Hook>;
   readonly commands: Map<string, CommandHandler>;
   readonly customComponents: TestComponent[];
+  readonly customOptions: Array<CustomInvocationOptions | undefined>;
   readonly notifications: Array<{ message: string; type: string | undefined }>;
-  readonly overlayFocus: ReturnType<typeof vi.fn>;
   setIdle(value: boolean): void;
   readonly starts: Array<{ event: AudioEvent; theme: AudioTheme }>;
   readonly children: FakeChild[];
@@ -51,8 +70,8 @@ function createHarness(agentDirectory: string, mode: "tui" | "rpc" = "tui"): Ext
   const hooks = new Map<string, Hook>();
   const commands = new Map<string, CommandHandler>();
   const customComponents: TestComponent[] = [];
+  const customOptions: Array<CustomInvocationOptions | undefined> = [];
   const notifications: Array<{ message: string; type: string | undefined }> = [];
-  const overlayFocus = vi.fn();
   let idle = true;
   const starts: Array<{ event: AudioEvent; theme: AudioTheme }> = [];
   const children: FakeChild[] = [];
@@ -83,9 +102,10 @@ function createHarness(agentDirectory: string, mode: "tui" | "rpc" = "tui"): Ext
           keybindings: { matches(data: string, binding: string): boolean },
           done: (value: T) => void,
         ) => TestComponent,
-        options: { onHandle?: (handle: { focus(): void }) => void },
+        options?: CustomInvocationOptions,
       ): Promise<T> =>
         new Promise<T>((resolve) => {
+          customOptions.push(options);
           const component = factory(
             { requestRender: vi.fn() },
             { fg: (_color, text) => text, bold: (text) => text },
@@ -105,7 +125,6 @@ function createHarness(agentDirectory: string, mode: "tui" | "rpc" = "tui"): Ext
             resolve,
           );
           customComponents.push(component);
-          options.onHandle?.({ focus: overlayFocus });
         }),
     ),
   };
@@ -141,8 +160,8 @@ function createHarness(agentDirectory: string, mode: "tui" | "rpc" = "tui"): Ext
     hooks,
     commands,
     customComponents,
+    customOptions,
     notifications,
-    overlayFocus,
     setIdle: (value) => {
       idle = value;
     },
@@ -385,7 +404,7 @@ describe("Pi lifecycle integration", () => {
     expect(tuiHarness.starts).toEqual([]);
   });
 
-  it("opens one usable component, focuses it on reinvocation, and closes one level at a time", async () => {
+  it("opens one inline component, ignores reinvocation, and closes one level at a time", async () => {
     const directory = await mkdtemp(join(tmpdir(), "audio-extension-command-singleton-"));
     const harness = createHarness(directory);
     await invoke(harness, "session_start", { type: "session_start", reason: "new" });
@@ -401,7 +420,7 @@ describe("Pi lifecycle integration", () => {
     ).toBe(true);
     await invokeCommand(harness);
     expect(harness.customComponents).toHaveLength(1);
-    expect(harness.overlayFocus).toHaveBeenCalledOnce();
+    expect(harness.customOptions).toEqual([undefined]);
 
     const component = harness.customComponents[0];
     if (component?.handleInput === undefined) throw new Error("Expected interactive component");
@@ -418,6 +437,14 @@ describe("Pi lifecycle integration", () => {
     expect(component.render(80).some((line) => line.includes("Turn all sounds on"))).toBe(true);
     component.handleInput("ctrl+c");
     await firstCommand;
+
+    const reopenedCommand = invokeCommand(harness);
+    await vi.waitFor(() => {
+      expect(harness.customComponents).toHaveLength(2);
+    });
+    expect(harness.customOptions).toEqual([undefined, undefined]);
+    harness.customComponents[1]?.handleInput?.("escape");
+    await reopenedCommand;
   });
 
   it("reloads configuration on open and emits only one Settings warning", async () => {
