@@ -415,9 +415,10 @@ describe("Pi lifecycle integration", () => {
       expect(harness.customComponents).toHaveLength(1);
     });
     expect(harness.starts.map(({ event }) => event)).toEqual(["settingsRootEnter"]);
-    expect(
-      harness.customComponents[0]?.render(80).some((line) => line.includes("Turn all sounds on")),
-    ).toBe(true);
+    const rootLines = harness.customComponents[0]?.render(80);
+    expect(rootLines?.some((line) => line.includes("Turn all sounds on"))).toBe(true);
+    expect(rootLines?.at(0)).toBe("─".repeat(80));
+    expect(rootLines?.at(-1)).toBe("─".repeat(80));
     await invokeCommand(harness);
     expect(harness.customComponents).toHaveLength(1);
     expect(harness.customOptions).toEqual([undefined]);

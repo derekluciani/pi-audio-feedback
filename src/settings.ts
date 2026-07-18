@@ -1,4 +1,4 @@
-import { DynamicBorder, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
+import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 
 import {
@@ -265,7 +265,9 @@ interface SettingsComponentOptions {
   readonly styleTitle: (text: string) => string;
   readonly styleSelected: (text: string) => string;
   readonly styleMuted: (text: string) => string;
-  readonly styleBorder?: (text: string) => string;
+  /** Public Pi borders are injected at the extension runtime boundary when this UI is assembled. */
+  readonly topBorder?: Component;
+  readonly bottomBorder?: Component;
 }
 
 function navigationForInput(
@@ -284,14 +286,9 @@ function navigationForInput(
 /** Complete keyboard-driven Settings component backed by the semantic state machine. */
 export class AudioSettingsComponent implements Component {
   readonly #options: SettingsComponentOptions;
-  readonly #topBorder: DynamicBorder;
-  readonly #bottomBorder: DynamicBorder;
 
   constructor(options: SettingsComponentOptions) {
     this.#options = options;
-    const styleBorder = options.styleBorder ?? ((text: string) => text);
-    this.#topBorder = new DynamicBorder((text: string) => styleBorder(text));
-    this.#bottomBorder = new DynamicBorder((text: string) => styleBorder(text));
   }
 
   handleInput(data: string): void {
@@ -326,18 +323,18 @@ export class AudioSettingsComponent implements Component {
       ),
     );
     const safeWidth = Math.max(0, width);
-    const renderBorder = (border: DynamicBorder): string[] =>
-      border.render(safeWidth).map((line) => truncateToWidth(line, safeWidth, ""));
+    const renderBorder = (border: Component | undefined): string[] =>
+      border?.render(safeWidth).map((line) => truncateToWidth(line, safeWidth, "")) ?? [];
     return [
-      ...renderBorder(this.#topBorder),
+      ...renderBorder(this.#options.topBorder),
       ...lines.map((line) => truncateToWidth(line, safeWidth, "")),
-      ...renderBorder(this.#bottomBorder),
+      ...renderBorder(this.#options.bottomBorder),
     ];
   }
 
   invalidate(): void {
-    this.#topBorder.invalidate();
-    this.#bottomBorder.invalidate();
+    this.#options.topBorder?.invalidate();
+    this.#options.bottomBorder?.invalidate();
     // Content styling callbacks use the callback-provided Pi theme on every render.
   }
 

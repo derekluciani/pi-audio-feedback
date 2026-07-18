@@ -196,7 +196,6 @@ describe("audio Settings semantic state machine", () => {
       styleTitle: (text) => text,
       styleSelected: (text) => text,
       styleMuted: (text) => text,
-      styleBorder: (text) => text,
     });
 
     component.handleInput("x");
@@ -234,6 +233,10 @@ describe("audio Settings semantic state machine", () => {
   it("frames every level at its content height and obeys narrow and normal widths", async () => {
     const harness = createMachine();
     const borderStyle = vi.fn((text: string) => text);
+    const createBorder = () => ({
+      render: (width: number): string[] => [borderStyle("─".repeat(Math.max(0, width)))],
+      invalidate: vi.fn(),
+    });
     const component = new AudioSettingsComponent({
       state: harness.state,
       keybindings: { matches: () => false } as unknown as KeybindingsManager,
@@ -241,7 +244,8 @@ describe("audio Settings semantic state machine", () => {
       styleTitle: (text) => text,
       styleSelected: (text) => text,
       styleMuted: (text) => text,
-      styleBorder: borderStyle,
+      topBorder: createBorder(),
+      bottomBorder: createBorder(),
     });
 
     const assertFrame = (expectedLineCount: number, helper: string): void => {

@@ -1,4 +1,5 @@
 import {
+  DynamicBorder,
   getAgentDir,
   type ExtensionAPI,
   type ExtensionContext,
@@ -292,6 +293,7 @@ export function registerAudioFeedbackExtension(
         requestRender = () => {
           tui.requestRender();
         };
+        const borderStyle = (text: string): string => theme.fg("accent", text);
         return new AudioSettingsComponent({
           state,
           keybindings,
@@ -299,7 +301,8 @@ export function registerAudioFeedbackExtension(
           styleTitle: (text) => theme.fg("accent", theme.bold(text)),
           styleSelected: (text) => theme.fg("accent", text),
           styleMuted: (text) => theme.fg("dim", text),
-          styleBorder: (text) => theme.fg("accent", text),
+          topBorder: new DynamicBorder(borderStyle),
+          bottomBorder: new DynamicBorder(borderStyle),
         });
       });
     } catch {

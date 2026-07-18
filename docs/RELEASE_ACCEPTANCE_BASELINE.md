@@ -116,10 +116,11 @@ audibility.
   unhandled promise rejections and asserts no output/rejection. Dynamic network counters remain
   zero.
 - Resource cleanup is observed without product diagnostics: injected timer ownership, fake-child
-  listener sets and kill behavior, custom-component promises/counts, command focus behavior, and raw
-  terminal listener disposers. Tests close then reopen Settings to prove its singleton clears, and
-  shut down while Settings is open to prove disposal, no stale focus, and a fresh next-session
-  component. Player close/error and shutdown leave no test-owned timers or child listeners.
+  listener sets and kill behavior, custom-component promises/counts, command singleton behavior, and
+  raw terminal listener disposers. Tests close then reopen Settings to prove its singleton clears,
+  and shut down while Settings is open to prove disposal, no stale controller, and a fresh
+  next-session component. Player close/error and shutdown leave no test-owned timers or child
+  listeners.
 
 - Exact ignored player stdio and platform argument contracts remain independently covered by
   `tests/platform-adapters.test.ts` —
