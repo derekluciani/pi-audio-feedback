@@ -4,17 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import { AUDIO_EVENTS, type AudioEvent, type AudioTheme } from "../extensions/audio-catalog.js";
-import { DEFAULT_CONFIGURATION, type AudioFeedbackConfiguration } from "../extensions/config.js";
-import { acceptSettingsToggleOffRequest } from "../extensions/eligibility.js";
+import { AUDIO_EVENTS, type AudioEvent, type AudioTheme } from "../src/audio-catalog.js";
+import { DEFAULT_CONFIGURATION, type AudioFeedbackConfiguration } from "../src/config.js";
+import { acceptSettingsToggleOffRequest } from "../src/eligibility.js";
 import {
   AudioScheduler,
   MAX_WAV_DURATION_MS,
   readPcmWavDurationMs,
   type AudioSchedulerOptions,
   type SchedulerChild,
-} from "../extensions/scheduler.js";
-import { TerminalOutcomeRequestAdapter } from "../extensions/terminal-outcomes.js";
+} from "../src/scheduler.js";
+import { TerminalOutcomeRequestAdapter } from "../src/terminal-outcomes.js";
 
 class FakeChild extends EventEmitter implements SchedulerChild {
   readonly kill = vi.fn(() => true);
@@ -131,7 +131,7 @@ describe("scheduler sequences and priorities", () => {
     expect(h.starts).toEqual(["agentStart:core", "agentSettled:core"]);
   });
 
-  it("implements every PRD 6.4 queue row and retains older equal priority", async () => {
+  it("implements every scheduler queue row and retains older equal priority", async () => {
     const h = makeHarness();
     await h.scheduler.request("settingsNavigate");
     await h.scheduler.request("settingsRootExit");

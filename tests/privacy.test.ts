@@ -80,13 +80,8 @@ vi.mock("node:dgram", () => ({
 
 vi.stubGlobal("fetch", hostMocks.forbidden("global.fetch"));
 
-const { LITERAL_ESCAPE_SEQUENCE, registerAudioFeedbackExtension } =
-  await import("../extensions/index.js");
-import type {
-  ConfigurationFileSystem,
-  LaunchableAudioCue,
-  SchedulerChild,
-} from "../extensions/index.js";
+const { LITERAL_ESCAPE_SEQUENCE, registerAudioFeedbackExtension } = await import("../src/index.js");
+import type { ConfigurationFileSystem, LaunchableAudioCue, SchedulerChild } from "../src/index.js";
 
 const ALLOWED_RUNTIME_MODULES = new Set([
   "@earendil-works/pi-coding-agent",
@@ -179,7 +174,7 @@ function assertChildProcessModuleBoundary(file: string, node: ts.Node, value: ts
   if (!ts.isStringLiteralLike(value) || !isChildProcessSpecifier(value.text)) return;
   const approvedImport =
     ts.isImportDeclaration(node) &&
-    normalize(file).endsWith("/extensions/platform-adapters.ts") &&
+    normalize(file).endsWith("/src/platform-adapters.ts") &&
     value.text === "node:child_process";
   if (!approvedImport) {
     throw new Error(
@@ -218,7 +213,7 @@ function compactNodeText(node: ts.Node, source: ts.SourceFile): string {
 }
 
 function assertPlatformChildProcessContract(file: string, source: ts.SourceFile): void {
-  const isPlatformAdapter = normalize(file).endsWith("/extensions/platform-adapters.ts");
+  const isPlatformAdapter = normalize(file).endsWith("/src/platform-adapters.ts");
   const childProcessImports = source.statements.filter(
     (statement): statement is ts.ImportDeclaration =>
       ts.isImportDeclaration(statement) &&
@@ -274,7 +269,7 @@ function assertPlatformChildProcessContract(file: string, source: ts.SourceFile)
   const expectedSpawnOptions =
     'functionspawnOptions(wavPath:string):SpawnOptions{return{cwd:dirname(wavPath),env:process.env,stdio:"ignore",detached:false,windowsHide:true,shell:false};}';
   if (spawnOptionsDeclarations.length !== 1 || spawnOptionsText !== expectedSpawnOptions) {
-    throw new Error(`${file}: common spawn options do not match PRD section 5.1`);
+    throw new Error(`${file}: common spawn options do not match the maintained player contract`);
   }
 
   const nodeSpawnUses: ts.Identifier[] = [];
@@ -574,7 +569,7 @@ function createRuntimeHarness(
     environment: {},
     platform: "darwin",
     operatingSystemRelease: "fixture",
-    moduleUrl: options.moduleUrl ?? new URL("../extensions/index.ts", import.meta.url).href,
+    moduleUrl: options.moduleUrl ?? new URL("../src/index.ts", import.meta.url).href,
     launchPlayer: (cue) => {
       starts.push(cue.event);
       const child = options.launchPlayer?.(cue) ?? new FakeChild();
@@ -665,7 +660,7 @@ afterEach(async () => {
 
 describe("runtime privacy and output containment", () => {
   it("allows only the closed published runtime graph and rejects loader/network escapes", async () => {
-    const extensionRoot = fileURLToPath(new URL("../extensions", import.meta.url));
+    const extensionRoot = fileURLToPath(new URL("../src", import.meta.url));
     const publishedSource = await loadPublishedExtensionGraph(extensionRoot);
     const files = [...publishedSource.keys()];
     expect(files.map((file) => file.slice(extensionRoot.length + 1))).toEqual([
@@ -769,7 +764,7 @@ describe("runtime privacy and output containment", () => {
   });
 
   it("rejects multi-file child_process re-export laundering across the published graph", async () => {
-    const extensionRoot = fileURLToPath(new URL("../extensions", import.meta.url));
+    const extensionRoot = fileURLToPath(new URL("../src", import.meta.url));
     const publishedSource = await loadPublishedExtensionGraph(extensionRoot);
     const platformAdapterPath = join(extensionRoot, "platform-adapters.ts");
     const importerPath = join(extensionRoot, "index.ts");
@@ -855,7 +850,7 @@ describe("runtime privacy and output containment", () => {
     await writeFile(join(directory, "pi-audio-feedback.json"), "{ malformed", "utf8");
     const output = installContainmentSentinels();
     try {
-      const missingModuleUrl = new URL("extensions/index.ts", `file://${directory}/`).href;
+      const missingModuleUrl = new URL("src/index.ts", `file://${directory}/`).href;
       const harness = createRuntimeHarness(directory, { moduleUrl: missingModuleUrl });
       await expect(
         invoke(harness, "session_start", { type: "session_start", reason: "startup" }),

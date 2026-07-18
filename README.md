@@ -1,6 +1,7 @@
 # pi-audio-feedback
 
-`pi-audio-feedback` is an extension for the Pi Agent Harness that provides short, audio cues for supported Pi lifecycle events.
+`pi-audio-feedback` is an extension for the Pi Agent Harness that provides short, audio cues for
+supported Pi lifecycle events.
 
 ## Install
 
@@ -48,7 +49,7 @@ Settings theme preview and lifecycle cue on required platforms:
 
 WSL is explicitly unsupported. These rows remain a `human-gate`; automated agents must not claim
 that a cue was heard. The exact automated-to-manual evidence map and human test record requirements
-are maintained in [`docs/ACCEPTANCE_TRACEABILITY.md`](docs/ACCEPTANCE_TRACEABILITY.md).
+are maintained in [`docs/RELEASE_ACCEPTANCE_BASELINE.md`](docs/RELEASE_ACCEPTANCE_BASELINE.md).
 
 ## License and notices
 

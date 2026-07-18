@@ -1,7 +1,7 @@
 # Runtime package allowlist (also enforced by package.json#files).
 *
-!extensions/
-!extensions/**
+!src/
+!src/**
 !assets/
 !assets/wav/
 !assets/wav/**
@@ -19,8 +19,7 @@ tests/
 .pi/
 _ignore/
 AGENTS.md
-Coding_Best_Practices.md
-PRD_Audio_Feedback_Implementation.md
+docs/Coding_Best_Practices.md
 tsconfig.json
 *.config.js
 *.config.ts

@@ -1,10 +1,12 @@
-# PRD §11 Release Acceptance Traceability
+# Release Acceptance Baseline
 
-This checklist is the automated evidence map for a release checkout. Test names are stable evidence
-identifiers, not audibility claims. Any row marked **`human-gate`** must be performed and recorded
-by a person; automated agents skip it and must not report that a cue was heard.
+This maintained checklist is the automated evidence map for the current release checkout. The
+repository implementation, tests, package contracts, and this document—not the historical MVP
+PRD—define the active baseline. Test names are stable evidence identifiers, not audibility claims.
+Any row marked **`human-gate`** must be performed and recorded by a person; automated agents skip it
+and must not report that a cue was heard.
 
-## §11.1 Deterministic scheduler
+## Deterministic scheduler
 
 | Row                                                                  | Automated evidence                                                                                                                                                                                                                                             |
 | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -21,10 +23,10 @@ by a person; automated agents skip it and must not report that a cue was heard.
 | 11. accepted toggle-off survives disabling all                       | `tests/scheduler.test.ts` — `requires the opaque accepted proof and survives disabling all toggles`                                                                                                                                                            |
 | 12. disabled tool error does not affect debounce                     | `tests/scheduler.test.ts` — `disabled errors neither open nor extend the debounce window`                                                                                                                                                                      |
 
-The complete §6.4 state table is additionally covered by
-`implements every PRD 6.4 queue row and retains older equal priority`.
+The complete scheduler queue contract is additionally covered by
+`implements every scheduler queue row and retains older equal priority`.
 
-## §11.2 Configuration
+## Configuration
 
 | Case                                     | Automated evidence                                                                                                                                                         |
 | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -45,7 +47,7 @@ The complete §6.4 state table is additionally covered by
 | session reload                           | `reloads disk changes for a later session`; assembled contexts: `tests/extension.test.ts` — `reloads disk config for every context and requests appStart only for startup` |
 | invalid/unsupported not auto-overwritten | malformed/older tests assert unchanged load; newer, unreadable, and symlink tests assert preservation/rejection                                                            |
 
-## §11.3 Assets and package
+## Assets and package
 
 | Row                                            | Automated evidence / exact command                                                                                                           |
 | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -61,7 +63,7 @@ The package snapshot requires every extension module, package metadata, notices,
 manifest, and every manifest-listed WAV. It rejects every additional path, including tests,
 `.web-kits`, patch inputs, build scripts, docs, and test/spec files.
 
-## §11.4 Platform acceptance
+## Platform acceptance
 
 | Environment                       | Automated evidence                                                                                                          | Manual requirement                               |
 | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
@@ -75,32 +77,31 @@ manifest, and every manifest-listed WAV. It rejects every additional path, inclu
 Automated platform fixtures inject `spawn`; they never launch audio and never claim runner OS
 audibility.
 
-## §11.5 Privacy, output, and resource containment
+## Privacy, output, and resource containment
 
 - Closed static runtime graph and player boundary: `tests/privacy.test.ts` recursively parses every
-  published `extensions/**/*.ts` file with the TypeScript compiler AST; the asserted eight-file set
-  is the same extension set required by the 66-file pack snapshot in
-  `tests/package-install.test.ts`. Imports may name only the two Pi peers, the exact Node built-ins
-  used by production, or relative modules resolving inside that scanned set. Import-equals and
-  dynamic import are forbidden. The product's unused global/reflection roots (`globalThis`,
-  `global`, `window`, `navigator`, `Reflect`, `Proxy`, `eval`, `Function`, and `WebAssembly`) are
-  rejected entirely, as are forbidden loader/network names, constructor/prototype escapes, Object
-  aliasing/reflection, and computed Object/loader access; production Object use is limited to
-  `freeze`, `fromEntries`, and `keys`. Adversarial fixtures cover aliases/destructuring,
-  concatenated keys, Reflect get/apply, Object descriptors, indirect eval/Function, Proxy, dynamic
-  loaders, and every mocked network built-in.
+  published `src/**/*.ts` file with the TypeScript compiler AST; the asserted eight-file set is the
+  same extension set required by the 66-file pack snapshot in `tests/package-install.test.ts`.
+  Imports may name only the two Pi peers, the exact Node built-ins used by production, or relative
+  modules resolving inside that scanned set. Import-equals and dynamic import are forbidden. The
+  product's unused global/reflection roots (`globalThis`, `global`, `window`, `navigator`,
+  `Reflect`, `Proxy`, `eval`, `Function`, and `WebAssembly`) are rejected entirely, as are forbidden
+  loader/network names, constructor/prototype escapes, Object aliasing/reflection, and computed
+  Object/loader access; production Object use is limited to `freeze`, `fromEntries`, and `keys`.
+  Adversarial fixtures cover aliases/destructuring, concatenated keys, Reflect get/apply, Object
+  descriptors, indirect eval/Function, Proxy, dynamic loaders, and every mocked network built-in.
 - Closed subprocess contract: before applying the general module allowlist, the same analyzer
   inspects import declarations, named and star re-exports, import-equals, import types, dynamic
   imports, `require()` calls, and string-named module declarations in every published extension
   module. Every bare, `node:` or subpath `child_process` reference is rejected except the exact
-  named `spawn as nodeSpawn` plus type-only `SpawnOptions` import in
-  `extensions/platform-adapters.ts`; direct re-exports are never allowed. The imported value binding
-  may occur only in that import and as `selectPlatformPlayer`'s default `SpawnPlayer` initializer,
-  so local exports, exported assignments, aliases, namespace imports, and other uses fail. All four
-  boundary calls and common options are AST-matched to PRD §5's exact `afplay`, `paplay`, `aplay`,
-  and `powershell.exe` executable/argument contracts. Single-file mutations and published-graph
-  two-file mutations (direct, renamed, star, and imported-binding re-exports plus a relative
-  importer's dormant `curl` launch) must fail through the acceptance analyzer.
+  named `spawn as nodeSpawn` plus type-only `SpawnOptions` import in `src/platform-adapters.ts`;
+  direct re-exports are never allowed. The imported value binding may occur only in that import and
+  as `selectPlatformPlayer`'s default `SpawnPlayer` initializer, so local exports, exported
+  assignments, aliases, namespace imports, and other uses fail. All four boundary calls and common
+  options are AST-matched to the maintained exact `afplay`, `paplay`, `aplay`, and `powershell.exe`
+  executable/argument contracts. Single-file mutations and published-graph two-file mutations
+  (direct, renamed, star, and imported-binding re-exports plus a relative importer's dormant `curl`
+  launch) must fail through the acceptance analyzer.
 - Dynamic offline boundary: before production extension import, the same test hoists throwing,
   counting mocks for global `fetch` and the entry APIs of `node:http`, `node:https`, `node:http2`,
   `node:net`, `node:tls`, `node:dns`, `node:dns/promises`, and `node:dgram`. The separate
@@ -144,7 +145,7 @@ Production audit findings must be zero before release. Build-only advisories may
 an upstream reference and non-exploitability rationale, but critical/high findings are never waived
 silently.
 
-## PRD §12 step 6 manual record
+## Manual release record
 
 Before prerelease publication, attach a dated human test record for the `human-gate` rows above,
 including machine architecture, OS version, player/server, preview result, and lifecycle result.

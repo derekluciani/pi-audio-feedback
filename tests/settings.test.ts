@@ -10,7 +10,7 @@ import {
   EDITABLE_AUDIO_EVENTS,
   type AudioEvent,
   type AudioTheme,
-} from "../extensions/audio-catalog.js";
+} from "../src/audio-catalog.js";
 import {
   CONFIG_FILE_NAME,
   ConfigurationStore,
@@ -19,11 +19,11 @@ import {
   type ConfigurationMutation,
   type ConfigurationSnapshot,
   type MutationResult,
-} from "../extensions/config.js";
+} from "../src/config.js";
 import {
   acceptSettingsToggleOffRequest,
   type AcceptedSettingsToggleOffRequest,
-} from "../extensions/eligibility.js";
+} from "../src/eligibility.js";
 import {
   AudioSettingsComponent,
   ROOT_SETTINGS_OPTIONS,
@@ -32,7 +32,7 @@ import {
   THEME_SETTINGS_OPTIONS,
   type SettingsAudioRequests,
   type SettingsConfigurationStore,
-} from "../extensions/settings.js";
+} from "../src/settings.js";
 
 const temporaryDirectories: string[] = [];
 

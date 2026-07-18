@@ -13,13 +13,12 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
   getAgentDir: (): string => "/supplied/pi-agent",
 }));
 
-import type { AudioEvent, AudioTheme } from "../extensions/audio-catalog.js";
-import type { LaunchableAudioCue } from "../extensions/eligibility.js";
-import type { SchedulerChild } from "../extensions/scheduler.js";
-import { THEME_SELECTOR_HELPER } from "../extensions/settings.js";
+import type { AudioEvent, AudioTheme } from "../src/audio-catalog.js";
+import type { LaunchableAudioCue } from "../src/eligibility.js";
+import type { SchedulerChild } from "../src/scheduler.js";
+import { THEME_SELECTOR_HELPER } from "../src/settings.js";
 
-const { LITERAL_ESCAPE_SEQUENCE, registerAudioFeedbackExtension } =
-  await import("../extensions/index.js");
+const { LITERAL_ESCAPE_SEQUENCE, registerAudioFeedbackExtension } = await import("../src/index.js");
 
 class FakeChild extends EventEmitter implements SchedulerChild {
   readonly kill = vi.fn(() => true);
