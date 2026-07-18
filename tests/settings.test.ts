@@ -1,4 +1,5 @@
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -227,6 +228,56 @@ describe("audio Settings semantic state machine", () => {
       "settingsNavigate",
       "settingsThemePreview",
     ]);
+  });
+
+  it("frames every level at its content height and obeys narrow and normal widths", async () => {
+    const harness = createMachine();
+    const borderStyle = vi.fn((text: string) => text);
+    const createBorder = () => ({
+      render: (width: number): string[] => [borderStyle("─".repeat(Math.max(0, width)))],
+      invalidate: vi.fn(),
+    });
+    const component = new AudioSettingsComponent({
+      state: harness.state,
+      keybindings: { matches: () => false } as unknown as KeybindingsManager,
+      requestRender: harness.renders,
+      styleTitle: (text) => text,
+      styleSelected: (text) => text,
+      styleMuted: (text) => text,
+      topBorder: createBorder(),
+      bottomBorder: createBorder(),
+    });
+
+    const assertFrame = (expectedLineCount: number, helper: string): void => {
+      const normalLines = component.render(80);
+      expect(normalLines).toHaveLength(expectedLineCount);
+      expect(normalLines[0]).toBe("─".repeat(80));
+      expect(normalLines.at(-2)).toBe(helper);
+      expect(normalLines.at(-1)).toBe("─".repeat(80));
+
+      for (const width of [0, 1, 12, 42, 80]) {
+        const lines = component.render(width);
+        expect(lines).toHaveLength(expectedLineCount);
+        expect(lines[0]).toBe("─".repeat(width));
+        expect(lines.at(-1)).toBe("─".repeat(width));
+        expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+      }
+    };
+
+    assertFrame(10, "↑/↓ navigate • Enter select • Esc cancel");
+
+    await harness.state.navigate("down");
+    await harness.state.navigate("down");
+    await harness.state.confirm();
+    expect(harness.state.level).toBe("events");
+    assertFrame(19, "↑/↓ navigate • Enter select • Esc cancel");
+
+    await harness.state.cancel();
+    await harness.state.navigate("end");
+    await harness.state.confirm();
+    expect(harness.state.level).toBe("themes");
+    assertFrame(10, THEME_SELECTOR_HELPER);
+    expect(borderStyle).toHaveBeenCalledWith(expect.stringContaining("─"));
   });
 
   it("clamps every movement and requests navigation only for an actual change", async () => {

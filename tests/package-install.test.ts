@@ -167,6 +167,15 @@ describe("published package", () => {
     await writeFile(
       join(suppliedPiDirectory, "index.js"),
       `
+        export class DynamicBorder {
+          constructor(color = (text) => text) {
+            this.color = color;
+          }
+          render(width) {
+            return [this.color("─".repeat(Math.max(0, width)))];
+          }
+          invalidate() {}
+        }
         export const getAgentDir = () => {
           globalThis.__PI_PUBLIC_GET_AGENT_DIR_CALLS__ =
             (globalThis.__PI_PUBLIC_GET_AGENT_DIR_CALLS__ ?? 0) + 1;

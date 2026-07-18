@@ -26,6 +26,19 @@ const hostMocks = vi.hoisted(() => {
 // keeps Node 20 from eagerly loading Pi's unrelated undici path while preserving the Pi/TUI APIs the
 // extension actually consumes. The separate package/minimum-Pi acceptance test loads real 0.80.6.
 vi.mock("@earendil-works/pi-coding-agent", () => ({
+  DynamicBorder: class {
+    readonly #color: (text: string) => string;
+
+    constructor(color: (text: string) => string = (text) => text) {
+      this.#color = color;
+    }
+
+    render(width: number): string[] {
+      return [this.#color("─".repeat(Math.max(0, width)))];
+    }
+
+    invalidate(): void {}
+  },
   getAgentDir: (): string => "/host-provided-agent-directory",
 }));
 vi.mock("@earendil-works/pi-tui", () => ({
@@ -132,6 +145,11 @@ class FakeChild extends EventEmitter implements SchedulerChild {
 type Hook = (event: Readonly<Record<string, unknown>>, context: ExtensionContext) => unknown;
 type Command = (args: string, context: ExtensionCommandContext) => unknown;
 type TestComponent = { handleInput?(data: string): void; render?(width: number): string[] };
+type CustomInvocationOptions = {
+  readonly overlay?: boolean;
+  readonly overlayOptions?: unknown;
+  readonly onHandle?: (handle: { focus(): void }) => void;
+};
 
 interface RuntimeHarness {
   readonly hooks: Map<string, Hook>;
@@ -143,8 +161,8 @@ interface RuntimeHarness {
   readonly terminalListeners: Set<(data: string) => unknown>;
   readonly removeTerminalListener: ReturnType<typeof vi.fn>;
   readonly components: TestComponent[];
+  readonly customOptions: Array<CustomInvocationOptions | undefined>;
   readonly notifications: string[];
-  readonly focusOverlay: ReturnType<typeof vi.fn>;
   activeComponentCount(): number;
 }
 
@@ -506,8 +524,8 @@ function createRuntimeHarness(
   const activeTimers = new Set<number>();
   const terminalListeners = new Set<(data: string) => unknown>();
   const components: TestComponent[] = [];
+  const customOptions: Array<CustomInvocationOptions | undefined> = [];
   const notifications: string[] = [];
-  const focusOverlay = vi.fn();
   let activeComponents = 0;
   let timerId = 0;
   const removeTerminalListener = vi.fn();
@@ -536,10 +554,10 @@ function createRuntimeHarness(
           keybindings: { matches(data: string, binding: string): boolean },
           done: (value: T) => void,
         ) => TestComponent,
-        options?: { onHandle?(handle: { focus(): void }): void },
+        options?: CustomInvocationOptions,
       ): Promise<T> =>
         new Promise<T>((resolve) => {
-          options?.onHandle?.({ focus: focusOverlay });
+          customOptions.push(options);
           activeComponents += 1;
           let finished = false;
           const component = factory(
@@ -600,8 +618,8 @@ function createRuntimeHarness(
     terminalListeners,
     removeTerminalListener,
     components,
+    customOptions,
     notifications,
-    focusOverlay,
     activeComponentCount: () => activeComponents,
   };
 }
@@ -988,7 +1006,8 @@ describe("runtime privacy and output containment", () => {
     });
     expect(harness.activeComponentCount()).toBe(1);
     await harness.command("", harness.context as ExtensionCommandContext);
-    expect(harness.focusOverlay).toHaveBeenCalledOnce();
+    expect(harness.components).toHaveLength(2);
+    expect(harness.customOptions).toEqual([undefined, undefined]);
     harness.components[1]?.handleInput?.("escape");
     await secondCommand;
     for (const child of harness.children) child.emit("error", new Error("fixture cleanup"));
@@ -1010,10 +1029,9 @@ describe("runtime privacy and output containment", () => {
 
     await shutdownAndAssertClean(harness);
     await openCommand;
-    const focusCount = harness.focusOverlay.mock.calls.length;
     await harness.command("", harness.context as ExtensionCommandContext);
     expect(harness.components).toHaveLength(1);
-    expect(harness.focusOverlay).toHaveBeenCalledTimes(focusCount);
+    expect(harness.customOptions).toEqual([undefined]);
 
     await invoke(harness, "session_start", { type: "session_start", reason: "new" });
     expect(harness.terminalListeners.size).toBe(1);

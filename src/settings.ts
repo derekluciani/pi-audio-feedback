@@ -265,6 +265,9 @@ interface SettingsComponentOptions {
   readonly styleTitle: (text: string) => string;
   readonly styleSelected: (text: string) => string;
   readonly styleMuted: (text: string) => string;
+  /** Public Pi borders are injected at the extension runtime boundary when this UI is assembled. */
+  readonly topBorder?: Component;
+  readonly bottomBorder?: Component;
 }
 
 function navigationForInput(
@@ -319,11 +322,20 @@ export class AudioSettingsComponent implements Component {
           : "↑/↓ navigate • Enter select • Esc cancel",
       ),
     );
-    return lines.map((line) => truncateToWidth(line, Math.max(0, width), ""));
+    const safeWidth = Math.max(0, width);
+    const renderBorder = (border: Component | undefined): string[] =>
+      border?.render(safeWidth).map((line) => truncateToWidth(line, safeWidth, "")) ?? [];
+    return [
+      ...renderBorder(this.#options.topBorder),
+      ...lines.map((line) => truncateToWidth(line, safeWidth, "")),
+      ...renderBorder(this.#options.bottomBorder),
+    ];
   }
 
   invalidate(): void {
-    // Rendering is computed from current state and callback-provided Pi theme every time.
+    this.#options.topBorder?.invalidate();
+    this.#options.bottomBorder?.invalidate();
+    // Content styling callbacks use the callback-provided Pi theme on every render.
   }
 
   #title(level: SettingsLevel): string {

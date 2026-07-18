@@ -1,4 +1,5 @@
 import {
+  DynamicBorder,
   getAgentDir,
   type ExtensionAPI,
   type ExtensionContext,
@@ -176,11 +177,10 @@ function createSessionRuntime(
   return runtime;
 }
 
-/** The currently visible Settings overlay and its session-bound controls. */
+/** The currently visible inline Settings component and its session-bound controls. */
 interface LiveSettingsController {
   readonly generation: number;
   readonly state: SettingsStateMachine;
-  focus(): void;
   dispose(): void;
 }
 
@@ -225,10 +225,7 @@ export function registerAudioFeedbackExtension(
       ctx.ui.notify("Audio settings are available when Pi is idle.", "info");
       return;
     }
-    if (settings !== null) {
-      settings.focus();
-      return;
-    }
+    if (settings !== null) return;
 
     const generation = sessionGeneration;
     let openedController: LiveSettingsController | null = null;
@@ -245,7 +242,6 @@ export function registerAudioFeedbackExtension(
       if (warning !== null) ctx.ui.notify(warning, "warning");
 
       let finish: (() => void) | null = null;
-      let focusOverlay = (): void => undefined;
       let requestRender = (): void => undefined;
       const state = new SettingsStateMachine(
         {
@@ -273,10 +269,6 @@ export function registerAudioFeedbackExtension(
       const controller: LiveSettingsController = {
         generation,
         state,
-        focus: () => {
-          focusOverlay();
-          requestRender();
-        },
         dispose: () => {
           state.dispose();
         },
@@ -291,36 +283,28 @@ export function registerAudioFeedbackExtension(
 
       await state.open();
       if (settings !== controller || state.isClosed) return;
-      await ctx.ui.custom<undefined>(
-        (tui, theme, keybindings, done) => {
-          let finished = false;
-          finish = () => {
-            if (finished) return;
-            finished = true;
-            done(undefined);
-          };
-          requestRender = () => {
-            tui.requestRender();
-          };
-          return new AudioSettingsComponent({
-            state,
-            keybindings,
-            requestRender,
-            styleTitle: (text) => theme.fg("accent", theme.bold(text)),
-            styleSelected: (text) => theme.fg("accent", text),
-            styleMuted: (text) => theme.fg("dim", text),
-          });
-        },
-        {
-          overlay: true,
-          overlayOptions: { width: "70%", minWidth: 42, maxHeight: "90%" },
-          onHandle: (handle) => {
-            focusOverlay = () => {
-              handle.focus();
-            };
-          },
-        },
-      );
+      await ctx.ui.custom<undefined>((tui, theme, keybindings, done) => {
+        let finished = false;
+        finish = () => {
+          if (finished) return;
+          finished = true;
+          done(undefined);
+        };
+        requestRender = () => {
+          tui.requestRender();
+        };
+        const borderStyle = (text: string): string => theme.fg("accent", text);
+        return new AudioSettingsComponent({
+          state,
+          keybindings,
+          requestRender,
+          styleTitle: (text) => theme.fg("accent", theme.bold(text)),
+          styleSelected: (text) => theme.fg("accent", text),
+          styleMuted: (text) => theme.fg("dim", text),
+          topBorder: new DynamicBorder(borderStyle),
+          bottomBorder: new DynamicBorder(borderStyle),
+        });
+      });
     } catch {
       // Expected load, UI, and feedback failures never reject into Pi or write output.
     } finally {
@@ -335,10 +319,7 @@ export function registerAudioFeedbackExtension(
   pi.registerCommand("audio:config", {
     description: "Configure audio feedback",
     handler: async (_args, ctx) => {
-      if (settingsPromise !== null) {
-        settings?.focus();
-        return;
-      }
+      if (settingsPromise !== null) return;
       const operation = openSettings(ctx);
       settingsPromise = operation;
       try {
