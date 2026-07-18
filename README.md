@@ -32,8 +32,10 @@ Run the following command from an idle local Pi TUI:
 /audio:config
 ```
 
-The settings interface controls event cues and the active built-in audio theme. Invoking the command
-outside TUI mode does not open an interface or play audio.
+The settings interface controls event cues and the active built-in audio theme. During rapid input,
+the newest Settings cue supersedes current or pending Settings feedback without overlapping players.
+Settings feedback never interrupts lifecycle or tool cues, and pending automatic feedback retains
+precedence. Invoking the command outside TUI mode does not open an interface or play audio.
 
 ## Release audibility checklist (`human-gate`)
 

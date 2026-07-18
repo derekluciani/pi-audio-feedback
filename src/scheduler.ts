@@ -14,6 +14,24 @@ import {
   type LaunchableAudioCue,
 } from "./eligibility.js";
 
+/** Explicit scheduler-internal Settings family; arbitrary caller prefixes are never trusted. */
+const SETTINGS_AUDIO_EVENTS = [
+  "settingsRootEnter",
+  "settingsRootExit",
+  "settingsSubmenuEnter",
+  "settingsSubmenuExit",
+  "settingsNavigate",
+  "settingsOptionSelect",
+  "settingsToggleOn",
+  "settingsToggleOff",
+  "settingsThemePreview",
+] as const satisfies readonly AudioEvent[];
+type SettingsAudioEvent = (typeof SETTINGS_AUDIO_EVENTS)[number];
+
+function isSettingsAudioEvent(event: AudioEvent): event is SettingsAudioEvent {
+  return SETTINGS_AUDIO_EVENTS.some((settingsEvent) => settingsEvent === event);
+}
+
 export const PENDING_EXPIRY_MS = 2_000;
 export const TOOL_ERROR_DEBOUNCE_MS = 1_000;
 export const WATCHDOG_GRACE_MS = 2_000;
@@ -74,9 +92,11 @@ export interface AudioSchedulerOptions {
 }
 
 interface PlayingRecord {
+  request: ScheduledAudioRequest;
   child: SchedulerChild | null;
   spawned: boolean;
   settled: boolean;
+  killRequested: boolean;
   watchdog: unknown;
   removeListeners: (() => void) | null;
 }
@@ -165,7 +185,8 @@ export class AudioScheduler {
   #playing: PlayingRecord | null = null;
   #pending: ScheduledAudioRequest | null = null;
   #toolErrorWindowStart: number | null = null;
-  #draining = false;
+  #launching = false;
+  #transitioning = false;
   #shutdown = false;
 
   constructor(options: AudioSchedulerOptions) {
@@ -208,16 +229,47 @@ export class AudioScheduler {
     }
 
     this.#purgeExpiredPending(now);
-    if (this.#playing === null && !this.#draining) {
-      this.#pending = request;
-      await this.#drainPending();
-      return "accepted";
+
+    const playing = this.#playing;
+    if (isSettingsAudioEvent(request.event) && playing !== null) {
+      if (isSettingsAudioEvent(playing.request.event)) {
+        if (this.#pending !== null && !isSettingsAudioEvent(this.#pending.event)) {
+          return "discarded";
+        }
+
+        // Install the newest request before cleanup so synchronous cleanup callbacks cannot expose
+        // an empty queue or launch superseded Settings work.
+        this.#pending = request;
+        this.#releasePlaying(playing, true);
+        await this.#drainPending();
+        return "accepted";
+      }
+
+      if (this.#pending === null || isSettingsAudioEvent(this.#pending.event)) {
+        this.#pending = request;
+        return "accepted";
+      }
+      return "discarded";
     }
-    if (this.#pending === null || request.priority > this.#pending.priority) {
+
+    const idle = this.#playing === null && !this.#launching && !this.#transitioning;
+    let accepted = false;
+    if (this.#pending === null) {
       this.#pending = request;
-      return "accepted";
+      accepted = true;
+    } else if (isSettingsAudioEvent(request.event)) {
+      if (isSettingsAudioEvent(this.#pending.event)) {
+        this.#pending = request;
+        accepted = true;
+      }
+    } else if (request.priority > this.#pending.priority) {
+      this.#pending = request;
+      accepted = true;
     }
-    return "discarded";
+
+    if (!accepted) return "discarded";
+    if (idle) await this.#drainPending();
+    return "accepted";
   }
 
   /** Idempotently stop this scheduler. No child or filesystem operation is awaited. */
@@ -228,8 +280,13 @@ export class AudioScheduler {
     const children = [...this.#children];
     const playing = this.#playing;
     this.#playing = null;
-    if (playing !== null) this.#clearPlayingResources(playing);
+    if (playing !== null) {
+      playing.settled = true;
+      this.#clearPlayingResources(playing);
+      this.#killPlayingChild(playing);
+    }
     for (const child of children) {
+      if (playing?.child === child) continue;
       try {
         child.kill();
       } catch {
@@ -250,33 +307,32 @@ export class AudioScheduler {
   }
 
   async #drainPending(): Promise<void> {
-    if (this.#draining) return;
-    this.#draining = true;
-    try {
-      while (!this.#shutdown && this.#playing === null && this.#pending !== null) {
-        const request = this.#pending;
-        this.#pending = null;
-        if (
-          request.event !== "agentSettled" &&
-          this.#options.clock.now() - request.requestedAt >= PENDING_EXPIRY_MS
-        ) {
-          continue;
-        }
-        await this.#tryLaunch(request);
+    while (
+      !this.#shutdown &&
+      !this.#launching &&
+      !this.#transitioning &&
+      this.#playing === null &&
+      this.#pending !== null
+    ) {
+      const request = this.#pending;
+      this.#pending = null;
+      if (
+        request.event !== "agentSettled" &&
+        this.#options.clock.now() - request.requestedAt >= PENDING_EXPIRY_MS
+      ) {
+        continue;
       }
-    } finally {
-      this.#draining = false;
-      if (!this.#shutdown && this.#playing === null && this.#pending !== null) {
-        void this.#drainPending();
-      }
+      await this.#tryLaunch(request);
     }
   }
 
   async #tryLaunch(request: ScheduledAudioRequest): Promise<void> {
     const record: PlayingRecord = {
+      request,
       child: null,
       spawned: false,
       settled: false,
+      killRequested: false,
       watchdog: null,
       removeListeners: null,
     };
@@ -305,7 +361,8 @@ export class AudioScheduler {
           ? await (this.#options.readWavDurationMs ?? readPcmWavDurationMs)(eligibility.wavPath)
           : suppliedDuration;
     } catch {
-      if (this.#playing === record) this.#playing = null;
+      if (!this.#canContinue(record)) return;
+      this.#playing = null;
       this.#notifyPreview(request, "validation");
       return;
     }
@@ -317,12 +374,16 @@ export class AudioScheduler {
     }
 
     let child: SchedulerChild;
+    this.#launching = true;
     try {
       child = this.#options.launchPlayer(eligibility);
     } catch {
-      if (this.#playing === record) this.#playing = null;
+      if (!this.#canContinue(record)) return;
+      this.#playing = null;
       this.#notifyPreview(request, "spawn-throw");
       return;
+    } finally {
+      this.#launching = false;
     }
 
     // launchPlayer is an injected process boundary and may reenter shutdown before returning.
@@ -343,12 +404,13 @@ export class AudioScheduler {
         this.#settle(record, true);
       }, durationMs + WATCHDOG_GRACE_MS);
       if (timerState.firedSynchronously || !this.#canContinue(record)) {
-        this.#options.timers.clearTimeout(handle);
+        this.#clearTimer(handle);
       } else {
         record.watchdog = handle;
       }
     };
     const onError = (): void => {
+      if (record.settled || this.#playing !== record) return;
       if (!record.spawned) this.#notifyPreview(request, "pre-spawn-error");
       this.#settle(record, false);
     };
@@ -356,9 +418,27 @@ export class AudioScheduler {
       this.#settle(record, false);
     };
     const removeInstalledListeners = (): void => {
-      if (installed.error) child.removeListener("error", onError);
-      if (installed.spawn) child.removeListener("spawn", onSpawn);
-      if (installed.close) child.removeListener("close", onClose);
+      if (installed.error) {
+        try {
+          child.removeListener("error", onError);
+        } catch {
+          // Injected/direct-child cleanup is best effort and remains output-silent.
+        }
+      }
+      if (installed.spawn) {
+        try {
+          child.removeListener("spawn", onSpawn);
+        } catch {
+          // Injected/direct-child cleanup is best effort and remains output-silent.
+        }
+      }
+      if (installed.close) {
+        try {
+          child.removeListener("close", onClose);
+        } catch {
+          // Injected/direct-child cleanup is best effort and remains output-silent.
+        }
+      }
       installed.error = false;
       installed.spawn = false;
       installed.close = false;
@@ -376,12 +456,26 @@ export class AudioScheduler {
     if (!this.#canContinue(record)) removeInstalledListeners();
   }
 
+  #clearTimer(handle: unknown): void {
+    try {
+      this.#options.timers.clearTimeout(handle);
+    } catch {
+      // Injected timer cleanup is best effort and remains output-silent.
+    }
+  }
+
   #killChild(child: SchedulerChild): void {
     try {
       child.kill();
     } catch {
       // Direct-child termination is explicitly best effort.
     }
+  }
+
+  #killPlayingChild(record: PlayingRecord): void {
+    if (record.child === null || record.killRequested) return;
+    record.killRequested = true;
+    this.#killChild(record.child);
   }
 
   #canContinue(record: PlayingRecord): boolean {
@@ -398,27 +492,36 @@ export class AudioScheduler {
   }
 
   #clearPlayingResources(record: PlayingRecord): void {
-    if (record.watchdog !== null) {
-      this.#options.timers.clearTimeout(record.watchdog);
-      record.watchdog = null;
-    }
-    record.removeListeners?.();
+    const watchdog = record.watchdog;
+    const removeListeners = record.removeListeners;
+    record.watchdog = null;
     record.removeListeners = null;
     if (record.child !== null) this.#children.delete(record.child);
+    if (watchdog !== null) this.#clearTimer(watchdog);
+    try {
+      removeListeners?.();
+    } catch {
+      // The installed remover is defensive, but the process boundary is still contained here.
+    }
+  }
+
+  #releasePlaying(record: PlayingRecord, killChild: boolean): void {
+    if (record.settled || this.#playing !== record) return;
+    record.settled = true;
+    const wasTransitioning = this.#transitioning;
+    this.#transitioning = true;
+    this.#playing = null;
+    try {
+      this.#clearPlayingResources(record);
+      if (killChild) this.#killPlayingChild(record);
+    } finally {
+      this.#transitioning = wasTransitioning;
+    }
   }
 
   #settle(record: PlayingRecord, watchdogExpired: boolean): void {
     if (record.settled || this.#playing !== record) return;
-    record.settled = true;
-    this.#clearPlayingResources(record);
-    this.#playing = null;
-    if (watchdogExpired && record.child !== null) {
-      try {
-        record.child.kill();
-      } catch {
-        // Watchdog termination is best effort and never user-visible.
-      }
-    }
+    this.#releasePlaying(record, watchdogExpired);
     void this.#drainPending();
   }
 }
