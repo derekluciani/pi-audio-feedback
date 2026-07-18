@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { AUDIO_EVENTS, type AudioEvent, type AudioTheme } from "../src/audio-catalog.js";
 import { DEFAULT_CONFIGURATION, type AudioFeedbackConfiguration } from "../src/config.js";
-import { acceptSettingsToggleOffRequest } from "../src/eligibility.js";
+import { acceptSettingsToggleOffRequest, type AudioEligibilityResult } from "../src/eligibility.js";
 import {
   AudioScheduler,
   MAX_WAV_DURATION_MS,
@@ -103,6 +103,20 @@ function makeHarness(overrides: Partial<AudioSchedulerOptions> = {}): Harness {
   };
 }
 
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+  readonly reject: (reason: Error) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 async function settle(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
@@ -131,13 +145,13 @@ describe("scheduler sequences and priorities", () => {
     expect(h.starts).toEqual(["agentStart:core", "agentSettled:core"]);
   });
 
-  it("implements every scheduler queue row and retains older equal priority", async () => {
+  it("implements every scheduler queue row while retaining older equal-priority automatic work", async () => {
     const h = makeHarness();
+    await h.scheduler.request("appStart");
+    await h.scheduler.request("settingsThemePreview", { themeOverride: "soft" });
+    expect(h.scheduler.pendingEvent).toBe("settingsThemePreview");
     await h.scheduler.request("settingsNavigate");
-    await h.scheduler.request("settingsRootExit");
-    expect(h.scheduler.pendingEvent).toBe("settingsRootExit");
-    await h.scheduler.request("settingsOptionSelect");
-    expect(h.scheduler.pendingEvent).toBe("settingsRootExit");
+    expect(h.scheduler.pendingEvent).toBe("settingsNavigate");
     await h.scheduler.request("toolError");
     expect(h.scheduler.pendingEvent).toBe("toolError");
     await h.scheduler.request("toolError");
@@ -146,9 +160,10 @@ describe("scheduler sequences and priorities", () => {
     expect(h.scheduler.pendingEvent).toBe("agentSettled");
     await h.scheduler.request("agentAborted");
     expect(h.scheduler.pendingEvent).toBe("agentSettled");
+    expect(await h.scheduler.request("agentSettled")).toBe("discarded");
     close(childAt(h, 0));
     await settle();
-    expect(h.starts).toEqual(["settingsNavigate:core", "agentSettled:core"]);
+    expect(h.starts).toEqual(["appStart:core", "agentSettled:core"]);
   });
 
   it("replaces pending navigation or tool error with completion without killing playback", async () => {
@@ -162,6 +177,267 @@ describe("scheduler sequences and priorities", () => {
       await settle();
       expect(h.starts).toEqual(["appStart:core", "agentSettled:core"]);
     }
+  });
+});
+
+describe("latest-wins Settings scheduling", () => {
+  it("identifies every maintained Settings event without trusting arbitrary prefixes", async () => {
+    const settingsEvents = [
+      "settingsRootEnter",
+      "settingsRootExit",
+      "settingsSubmenuEnter",
+      "settingsSubmenuExit",
+      "settingsNavigate",
+      "settingsOptionSelect",
+      "settingsToggleOn",
+      "settingsToggleOff",
+      "settingsThemePreview",
+    ] as const satisfies readonly AudioEvent[];
+
+    for (const event of settingsEvents) {
+      const h = makeHarness();
+      await h.scheduler.request(
+        event,
+        event === "settingsThemePreview" ? { themeOverride: "soft" } : {},
+      );
+      await h.scheduler.request("settingsNavigate");
+      expect(childAt(h, 0).kill, event).toHaveBeenCalledOnce();
+    }
+
+    const automatic = makeHarness();
+    await automatic.scheduler.request("agentStart");
+    await automatic.scheduler.request("settingsNavigate");
+    expect(childAt(automatic, 0).kill).not.toHaveBeenCalled();
+    expect(await automatic.scheduler.request("settingsCallerPrefixOnly")).toBe("invalid");
+  });
+
+  it("starts only the newest eligible cue from a rapid burst and never overlaps children", async () => {
+    const navigationEligibility = deferred<AudioEligibilityResult>();
+    const h = makeHarness({
+      resolveEligibility: (request) => {
+        const event = (request as { event: AudioEvent }).event;
+        h.requests.push(`${event}:core`);
+        if (event === "settingsNavigate") return navigationEligibility.promise;
+        return Promise.resolve({
+          launchable: true,
+          event,
+          priority: 1,
+          theme: "core",
+          wavPath: `/audio/core/${event}.wav`,
+          wavDurationMs: 25,
+        });
+      },
+    });
+
+    await h.scheduler.request("settingsRootEnter");
+    const navigation = h.scheduler.request("settingsNavigate");
+    await settle();
+    const preview = h.scheduler.request("settingsThemePreview", { themeOverride: "soft" });
+    const latest = h.scheduler.request("settingsRootExit");
+    await Promise.all([preview, latest]);
+
+    expect(h.starts).toEqual(["settingsRootEnter:core", "settingsRootExit:core"]);
+    expect(childAt(h, 0).kill).toHaveBeenCalledOnce();
+    expect(h.scheduler.trackedChildCount).toBe(1);
+    expect(h.scheduler.pendingEvent).toBeNull();
+
+    navigationEligibility.resolve({
+      launchable: true,
+      event: "settingsNavigate",
+      priority: 1,
+      theme: "core",
+      wavPath: "/audio/core/settingsNavigate.wav",
+      wavDurationMs: 25,
+    });
+    await navigation;
+    await settle();
+    expect(h.starts).toEqual(["settingsRootEnter:core", "settingsRootExit:core"]);
+  });
+
+  it("keeps automatic playback and precedence while replacing pending Settings across priorities", async () => {
+    const automatic = makeHarness();
+    await automatic.scheduler.request("appStart");
+    await automatic.scheduler.request("settingsThemePreview", { themeOverride: "soft" });
+    automatic.now.value = 1_999;
+    expect(await automatic.scheduler.request("settingsNavigate")).toBe("accepted");
+    expect(automatic.scheduler.pendingEvent).toBe("settingsNavigate");
+    expect(childAt(automatic, 0).kill).not.toHaveBeenCalled();
+    automatic.now.value = 3_000;
+    close(childAt(automatic, 0));
+    await settle();
+    expect(automatic.starts).toEqual(["appStart:core", "settingsNavigate:core"]);
+
+    const precedence = makeHarness();
+    await precedence.scheduler.request("settingsRootEnter");
+    await precedence.scheduler.request("agentSettled");
+    expect(await precedence.scheduler.request("settingsNavigate")).toBe("discarded");
+    expect(precedence.scheduler.pendingEvent).toBe("agentSettled");
+    expect(childAt(precedence, 0).kill).not.toHaveBeenCalled();
+    close(childAt(precedence, 0));
+    await settle();
+    expect(precedence.starts).toEqual(["settingsRootEnter:core", "agentSettled:core"]);
+  });
+
+  it("invalidates eligibility and duration continuations without stale launches or preview notices", async () => {
+    const blockedEligibility = deferred<AudioEligibilityResult>();
+    const eligibility = makeHarness({
+      resolveEligibility: (request) => {
+        const event = (request as { event: AudioEvent }).event;
+        if (event === "settingsThemePreview") return blockedEligibility.promise;
+        return Promise.resolve({
+          launchable: true,
+          event,
+          priority: 1,
+          theme: "core",
+          wavPath: `/audio/core/${event}.wav`,
+          wavDurationMs: 25,
+        });
+      },
+    });
+    const oldEligibility = eligibility.scheduler.request("settingsThemePreview", {
+      themeOverride: "soft",
+    });
+    await settle();
+    await eligibility.scheduler.request("settingsNavigate");
+    expect(eligibility.starts).toEqual(["settingsNavigate:core"]);
+    blockedEligibility.resolve({ launchable: false, reason: "missing-wav" });
+    await oldEligibility;
+    expect(eligibility.notices).toEqual([]);
+
+    const blockedDuration = deferred<number>();
+    const duration = makeHarness({
+      resolveEligibility: (request) => {
+        const event = (request as { event: AudioEvent }).event;
+        return Promise.resolve({
+          launchable: true,
+          event,
+          priority: 1,
+          theme: "core",
+          wavPath: `/audio/core/${event}.wav`,
+          ...(event === "settingsNavigate" ? { wavDurationMs: 25 } : {}),
+        });
+      },
+      readWavDurationMs: () => blockedDuration.promise,
+    });
+    const oldDuration = duration.scheduler.request("settingsThemePreview", {
+      themeOverride: "soft",
+    });
+    await settle();
+    await duration.scheduler.request("settingsNavigate");
+    expect(duration.starts).toEqual(["settingsNavigate:core"]);
+    blockedDuration.reject(new Error("late duration failure"));
+    await oldDuration;
+    expect(duration.notices).toEqual([]);
+  });
+
+  it("cleans a spawned preview watchdog, contains kill failure, and ignores captured late events", async () => {
+    const h = makeHarness();
+    await h.scheduler.request("settingsThemePreview", { themeOverride: "soft" });
+    const preview = childAt(h, 0);
+    const lateError = preview.listeners("error")[0];
+    const lateClose = preview.listeners("close")[0];
+    preview.emit("spawn");
+    expect(h.activeTimerCount()).toBe(1);
+    preview.kill.mockImplementation(() => {
+      throw new Error("already gone");
+    });
+
+    await expect(h.scheduler.request("settingsNavigate")).resolves.toBe("accepted");
+    expect(preview.kill).toHaveBeenCalledOnce();
+    expect(preview.eventNames()).toEqual([]);
+    expect(h.activeTimerCount()).toBe(0);
+    expect(h.scheduler.trackedChildCount).toBe(1);
+    expect(h.notices).toEqual([]);
+
+    lateError?.(new Error("late"));
+    lateClose?.(1, null);
+    h.fireTimer();
+    expect(h.starts).toEqual(["settingsThemePreview:soft", "settingsNavigate:core"]);
+    expect(h.notices).toEqual([]);
+    expect(h.scheduler.trackedChildCount).toBe(1);
+
+    h.scheduler.shutdown();
+    expect(childAt(h, 1).kill).toHaveBeenCalledOnce();
+    expect(h.scheduler.trackedChildCount).toBe(0);
+  });
+
+  it("keeps the newest request installed across reentrant watchdog cleanup and kill", async () => {
+    const holder: { scheduler: AudioScheduler | null } = { scheduler: null };
+    const reentrant = deferred<undefined>();
+    const h = makeHarness();
+    holder.scheduler = h.scheduler;
+    await h.scheduler.request("settingsThemePreview", { themeOverride: "soft" });
+    const preview = childAt(h, 0);
+    preview.emit("spawn");
+    preview.kill.mockImplementation(() => {
+      const request = holder.scheduler?.request("settingsRootExit");
+      if (request === undefined) reentrant.reject(new Error("Missing scheduler"));
+      else {
+        void request.then(
+          () => {
+            reentrant.resolve(undefined);
+          },
+          (error: unknown) => {
+            reentrant.reject(
+              error instanceof Error ? error : new Error("Reentrant request failed"),
+            );
+          },
+        );
+      }
+      return true;
+    });
+
+    await h.scheduler.request("settingsNavigate");
+    await reentrant.promise;
+    await settle();
+    expect(preview.kill).toHaveBeenCalledOnce();
+    expect(preview.eventNames()).toEqual([]);
+    expect(h.activeTimerCount()).toBe(0);
+    expect(h.starts).toEqual(["settingsThemePreview:soft", "settingsRootExit:core"]);
+    expect(h.scheduler.pendingEvent).toBeNull();
+    expect(h.scheduler.trackedChildCount).toBe(1);
+  });
+
+  it("defers a reentrant pre-spawn replacement until the returned child is killed", async () => {
+    const holder: { scheduler: AudioScheduler | null } = { scheduler: null };
+    const starts: AudioEvent[] = [];
+    const children: FakeChild[] = [];
+    const replacement = deferred<undefined>();
+    const h = makeHarness({
+      launchPlayer: (cue) => {
+        starts.push(cue.event);
+        const child = new FakeChild();
+        children.push(child);
+        if (starts.length === 1) {
+          const request = holder.scheduler?.request("settingsRootExit");
+          if (request === undefined) replacement.reject(new Error("Missing scheduler"));
+          else {
+            void request.then(
+              () => {
+                replacement.resolve(undefined);
+              },
+              (error: unknown) => {
+                replacement.reject(
+                  error instanceof Error ? error : new Error("Replacement request failed"),
+                );
+              },
+            );
+          }
+        }
+        return child;
+      },
+    });
+    holder.scheduler = h.scheduler;
+
+    await h.scheduler.request("settingsRootEnter");
+    await replacement.promise;
+    await settle();
+    expect(starts).toEqual(["settingsRootEnter", "settingsRootExit"]);
+    expect(children[0]?.kill).toHaveBeenCalledOnce();
+    expect(children[0]?.eventNames()).toEqual([]);
+    expect(children[1]?.kill).not.toHaveBeenCalled();
+    expect(h.scheduler.trackedChildCount).toBe(1);
+    expect(h.scheduler.pendingEvent).toBeNull();
   });
 });
 

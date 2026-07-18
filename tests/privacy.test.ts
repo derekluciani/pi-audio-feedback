@@ -1010,7 +1010,9 @@ describe("runtime privacy and output containment", () => {
     expect(harness.customOptions).toEqual([undefined, undefined]);
     harness.components[1]?.handleInput?.("escape");
     await secondCommand;
-    for (const child of harness.children) child.emit("error", new Error("fixture cleanup"));
+    for (const child of harness.children) {
+      if (child.listenerCount("error") > 0) child.emit("error", new Error("fixture cleanup"));
+    }
     await flush();
     await shutdownAndAssertClean(harness);
   });
@@ -1071,7 +1073,9 @@ describe("runtime privacy and output containment", () => {
       await invoke(harness, "agent_settled", { type: "agent_settled" });
       expect(harness.starts).not.toContain("agentAborted");
       for (const child of harness.children) {
-        child.emit("error", Object.assign(new Error("player unavailable"), { code: "ENOENT" }));
+        if (child.listenerCount("error") > 0) {
+          child.emit("error", Object.assign(new Error("player unavailable"), { code: "ENOENT" }));
+        }
       }
       await flush();
       expect(harness.activeComponentCount()).toBe(0);
