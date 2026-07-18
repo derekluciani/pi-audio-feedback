@@ -124,7 +124,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** CI values follow PRD section 2.1 exactly; whitespace is a nonempty marker. */
+/** CI values follow the maintained suppression contract; whitespace is a nonempty marker. */
 export function hasActiveCiMarker(
   environment: Readonly<Record<string, string | undefined>>,
 ): boolean {
@@ -163,7 +163,7 @@ function isConfiguration(value: unknown): value is AudioFeedbackConfiguration {
 }
 
 /**
- * Accept the sole PRD-approved pre-save snapshot using the runtime's current configuration.
+ * Accept the sole supported pre-save snapshot using the runtime's current configuration.
  * A null result means the configuration is invalid/unavailable or settingsToggleOff is disabled.
  */
 export function acceptSettingsToggleOffRequest(

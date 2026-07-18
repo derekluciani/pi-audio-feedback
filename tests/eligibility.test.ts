@@ -9,8 +9,8 @@ import {
   AUDIO_EVENT_PRIORITIES,
   AUDIO_THEMES,
   EVENT_SOUND_MAPPING,
-} from "../extensions/audio-catalog.js";
-import { DEFAULT_CONFIGURATION, type AudioFeedbackConfiguration } from "../extensions/config.js";
+} from "../src/audio-catalog.js";
+import { DEFAULT_CONFIGURATION, type AudioFeedbackConfiguration } from "../src/config.js";
 import {
   CI_MARKERS,
   acceptSettingsToggleOffRequest,
@@ -18,7 +18,7 @@ import {
   hasSshMarker,
   resolveAudioEligibility,
   resolvePackagedAudioPaths,
-} from "../extensions/eligibility.js";
+} from "../src/eligibility.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -205,7 +205,7 @@ describe("packaged paths", () => {
   it("resolves WAV and helper from an unusual installed module path, not cwd", async () => {
     const packageRoot = await mkdtemp(join(tmpdir(), "pi audio's-日本語-"));
     temporaryDirectories.push(packageRoot);
-    await mkdir(join(packageRoot, "extensions"), { recursive: true });
+    await mkdir(join(packageRoot, "src"), { recursive: true });
     await mkdir(join(packageRoot, "assets", "wav", "core"), { recursive: true });
     await mkdir(join(packageRoot, "scripts"), { recursive: true });
     await cp(
@@ -213,7 +213,7 @@ describe("packaged paths", () => {
       join(packageRoot, "assets", "wav", "core", "success.wav"),
     );
     await cp(resolve("scripts/play-wav.ps1"), join(packageRoot, "scripts", "play-wav.ps1"));
-    const moduleUrl = pathToFileURL(join(packageRoot, "extensions", "eligibility.ts")).href;
+    const moduleUrl = pathToFileURL(join(packageRoot, "src", "eligibility.ts")).href;
     const paths = resolvePackagedAudioPaths(moduleUrl);
     expect(paths.packageRoot).toBe(packageRoot);
     expect(paths.wavRoot).not.toContain(process.cwd());
@@ -243,7 +243,7 @@ describe("packaged paths", () => {
   it("rejects symlinked WAVs without following their targets", async () => {
     const packageRoot = await mkdtemp(join(tmpdir(), "pi-audio-wav-link-"));
     temporaryDirectories.push(packageRoot);
-    await mkdir(join(packageRoot, "extensions"), { recursive: true });
+    await mkdir(join(packageRoot, "src"), { recursive: true });
     await mkdir(join(packageRoot, "assets", "wav", "core"), { recursive: true });
     const outsideWav = join(packageRoot, "outside.wav");
     await cp(resolve("assets/wav/core/success.wav"), outsideWav);
@@ -254,7 +254,7 @@ describe("packaged paths", () => {
         { event: "appStart" },
         {
           ...options(),
-          moduleUrl: pathToFileURL(join(packageRoot, "extensions", "eligibility.ts")).href,
+          moduleUrl: pathToFileURL(join(packageRoot, "src", "eligibility.ts")).href,
         },
       ),
     ).resolves.toEqual({ launchable: false, reason: "missing-wav" });
@@ -263,7 +263,7 @@ describe("packaged paths", () => {
   it("rejects symlinked PowerShell helpers without following their targets", async () => {
     const packageRoot = await mkdtemp(join(tmpdir(), "pi-audio-helper-link-"));
     temporaryDirectories.push(packageRoot);
-    await mkdir(join(packageRoot, "extensions"), { recursive: true });
+    await mkdir(join(packageRoot, "src"), { recursive: true });
     await mkdir(join(packageRoot, "assets", "wav", "core"), { recursive: true });
     await mkdir(join(packageRoot, "scripts"), { recursive: true });
     await cp(
@@ -280,7 +280,7 @@ describe("packaged paths", () => {
         {
           ...options(),
           platform: "win32",
-          moduleUrl: pathToFileURL(join(packageRoot, "extensions", "eligibility.ts")).href,
+          moduleUrl: pathToFileURL(join(packageRoot, "src", "eligibility.ts")).href,
         },
       ),
     ).resolves.toEqual({ launchable: false, reason: "missing-helper" });

@@ -31,7 +31,7 @@ async function readPackageManifest(): Promise<PackageManifest> {
 
 describe("release foundation", () => {
   it("exports a loadable Pi extension factory through the supplied public Pi API", async () => {
-    const { default: audioFeedbackExtension } = await import("../extensions/index.js");
+    const { default: audioFeedbackExtension } = await import("../src/index.js");
 
     expect(audioFeedbackExtension).toBeTypeOf("function");
     expect(audioFeedbackExtension).toHaveLength(1);
@@ -44,7 +44,7 @@ describe("release foundation", () => {
     expect(manifest.type).toBe("module");
     expect(manifest.engines?.node).toBe(">=20");
     expect(manifest.keywords).toEqual(["pi-package"]);
-    expect(manifest.pi?.extensions).toEqual(["./extensions"]);
+    expect(manifest.pi?.extensions).toEqual(["./src"]);
     expect(manifest.pi?.compatibility?.["@earendil-works/pi-coding-agent"]).toBe(">=0.80.6 <1.0.0");
     expect(manifest.peerDependencies?.["@earendil-works/pi-coding-agent"]).toBe("*");
   });

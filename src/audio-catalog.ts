@@ -1,4 +1,4 @@
-/** Built-in theme identifiers. Custom themes are intentionally outside the MVP surface. */
+/** Built-in theme identifiers. Custom themes are not part of the supported configuration surface. */
 export const AUDIO_THEMES = ["core", "retro", "organic", "soft"] as const;
 export type AudioTheme = (typeof AUDIO_THEMES)[number];
 
@@ -50,7 +50,7 @@ export const AUDIO_EVENT_PRIORITIES = {
   settingsToggleOff: 1,
 } as const satisfies Readonly<Record<AudioEvent, number>>;
 
-/** Approved PRD section 10 logical-event to packaged-patch mapping. */
+/** Maintained logical-event to packaged-patch mapping for every built-in theme. */
 export const EVENT_SOUND_MAPPING = {
   appStart: { core: "success", retro: "success", organic: "success", soft: "success" },
   agentStart: { core: "copy", retro: "copy", organic: "copy", soft: "copy" },

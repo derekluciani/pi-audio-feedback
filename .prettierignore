@@ -4,6 +4,5 @@ _ignore/
 assets/patches/
 node_modules/
 AGENTS.md
-PRD_Audio_Feedback_Implementation.md
-Coding_Best_Practices.md
-project-orchestrator.md
+docs/Coding_Best_Practices.md
+SUBAGENT_RECALIB_PLAN_response.md

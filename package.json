@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "description": "Local audio feedback for the Pi coding agent",
   "type": "module",
-  "exports": "./extensions/index.ts",
+  "exports": "./src/index.ts",
   "files": [
-    "extensions",
+    "src",
     "assets/wav",
     "scripts/play-wav.ps1",
     "LICENSE",
@@ -51,7 +51,7 @@
   },
   "pi": {
     "extensions": [
-      "./extensions"
+      "./src"
     ],
     "compatibility": {
       "@earendil-works/pi-coding-agent": ">=0.80.6 <1.0.0"

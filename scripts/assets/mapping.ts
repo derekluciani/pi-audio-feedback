@@ -4,4 +4,4 @@ export {
   AUDIO_THEMES as THEMES,
   type AudioEvent as LogicalEvent,
   type AudioTheme as Theme,
-} from "../../extensions/audio-catalog.js";
+} from "../../src/audio-catalog.js";

@@ -26,7 +26,7 @@ import {
   getConfigurationPath,
   type ConfigurationFileHandle,
   type ConfigurationFileSystem,
-} from "../extensions/config.js";
+} from "../src/config.js";
 
 const temporaryDirectories: string[] = [];
 

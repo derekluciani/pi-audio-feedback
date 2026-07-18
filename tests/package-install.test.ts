@@ -10,14 +10,14 @@ type PackResult = { filename: string; files: PackFile[] };
 
 const temporaryDirectories: string[] = [];
 const REQUIRED_EXTENSION_FILES = [
-  "extensions/audio-catalog.ts",
-  "extensions/config.ts",
-  "extensions/eligibility.ts",
-  "extensions/index.ts",
-  "extensions/platform-adapters.ts",
-  "extensions/scheduler.ts",
-  "extensions/settings.ts",
-  "extensions/terminal-outcomes.ts",
+  "src/audio-catalog.ts",
+  "src/config.ts",
+  "src/eligibility.ts",
+  "src/index.ts",
+  "src/platform-adapters.ts",
+  "src/scheduler.ts",
+  "src/settings.ts",
+  "src/terminal-outcomes.ts",
 ] as const;
 const REQUIRED_PACKAGE_METADATA = [
   "LICENSE",

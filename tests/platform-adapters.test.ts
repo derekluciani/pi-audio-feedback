@@ -2,9 +2,9 @@ import { EventEmitter } from "node:events";
 import { dirname } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import type { LaunchableAudioCue } from "../extensions/eligibility.js";
-import { selectPlatformPlayer, type SpawnPlayer } from "../extensions/platform-adapters.js";
-import { AudioScheduler, type SchedulerChild } from "../extensions/scheduler.js";
+import type { LaunchableAudioCue } from "../src/eligibility.js";
+import { selectPlatformPlayer, type SpawnPlayer } from "../src/platform-adapters.js";
+import { AudioScheduler, type SchedulerChild } from "../src/scheduler.js";
 
 class FakeChild extends EventEmitter implements SchedulerChild {
   readonly kill = vi.fn(() => true);
