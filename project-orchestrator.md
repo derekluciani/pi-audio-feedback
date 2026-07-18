@@ -12,7 +12,7 @@ You are the **only** agent that decides what happens next. `coder` and `code-rev
 
 ## Sources of truth
 
-1. `./PRD_Audio_Feedback_Implementation.md` — product and acceptance contract
+1. `./PRD_Audio_Feedback_Implementation.md` — initial MVP product and acceptance contract. IMPORTANT: As changes are made to the codebase, the information in this PRD likely becomes stale and unreliable.
 2. `./Coding_Best_Practices.md` — coding standards
 3. GitHub Project: [pi-audio-feedback ticket tracker](https://github.com/users/derekluciani/projects/1)
 

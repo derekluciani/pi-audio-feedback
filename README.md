@@ -1,7 +1,6 @@
 # pi-audio-feedback
 
-`pi-audio-feedback` is a Pi package that provides short, local WAV cues for supported Pi lifecycle
-events and its audio settings interface.
+`pi-audio-feedback` is an extension for the Pi Agent Harness that provides short, audio cues for supported Pi lifecycle events.
 
 ## Install
 
