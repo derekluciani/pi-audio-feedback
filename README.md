@@ -1,4 +1,4 @@
-![banner-artwork](assets/graphics/banner.png)
+![banner-artwork](assets/media/banner.webp)
 
 `pi-audio-feedback` is an extension for the Pi Agent Harness (TUI mode) that provides short audio cues for common Pi lifecycle events.</br>
 
@@ -19,8 +19,14 @@ Choose from 4 different audio themes:
 + 🔊 **Organic**
 + 🔊 **Soft**
 
-All sounds are sourced from the [@web-kit/audio](https://audio.raphaelsalaja.com/) library, created by [@raphaelsalaja](https://github.com/raphaelsalaja).\
-`pi-audio-feedback` captures each sound patch at build time and ships each sample as a `.wav` file.
+<video controls width="720">
+  <source src="assets/media/demo.mp4" type="video/mp4">
+  Watch demo. Your browser does not support embedded video.
+</video>
+
+All sounds are sourced from the [@web-kit/audio](https://audio.raphaelsalaja.com/) library, created by [@raphaelsalaja](https://github.com/raphaelsalaja).</br>
+
+**Build time:** Each sound patch is a `.json` recipe that's synthesized using the `web audio api` and captured as a `.wav` file.
 
 ## Install
 
