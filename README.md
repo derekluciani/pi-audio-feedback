@@ -1,15 +1,16 @@
+![banner-artwork](assets/graphics/banner.png)
 
-
-`pi-audio-feedback` is an extension for the Pi Agent Harness (TUI only) that provides short audio cues for common Pi lifecycle events.</br>
+`pi-audio-feedback` is an extension for the Pi Agent Harness (TUI mode) that provides short audio cues for common Pi lifecycle events.</br>
 
 This can be useful for those wanting non-visual cues, for example when the agent finishes a task while running in the background.</br>
 
 The extension supports audio cues for the events:
++ `piStart`
 + `agentStart`
 + `agentSettled`
 + `agentAborted`
 + `toolError`
-+ `settings`
++ `settingsUI`
 
 ## Themes
 Choose from 4 different audio themes:
@@ -29,7 +30,7 @@ pi install npm:pi-audio-feedback
 
 ## Settings
 
-Run the command from pi TUI input:
+Run the command in Pi:
 
 ```text
 /audio:config
@@ -39,11 +40,11 @@ The user can control the playback of any sound (on/off) and choose from 1 of the
 
 ## Compatibility
 
-- **Pi:** `@earendil-works/pi-coding-agent >=0.80.6 <1.0.0`
-- **Node.js:** `>=20`
+- **Pi:** 0.80.6+
+- **Node.js:** 20+
 - **Supported local TUI platforms:**
   - macOS 14+ Apple Silicon 🟢 _tested_
-  - Windows 10+ x64, Windows PowerShell 5+ 🟢 _tested_
+  - Windows 10+ x64, PowerShell 5+ 🟢 _tested_
   - Linux Ubuntu/Debian 22+ x64, PipeWire/PulseAudio ⚫️ _not tested_
   - WSL is explicitly unsupported.
 - Audio is intentionally unavailable in non-TUI modes, including RPC, JSON, and print mode. Audio is
