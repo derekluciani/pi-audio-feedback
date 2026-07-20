@@ -22,7 +22,6 @@ const REQUIRED_EXTENSION_FILES = [
 const REQUIRED_PACKAGE_METADATA = [
   "LICENSE",
   "README.md",
-  "THIRD_PARTY_NOTICES.md",
   "package.json",
   "scripts/play-wav.ps1",
 ] as const;

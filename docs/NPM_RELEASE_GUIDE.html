@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pi Audio Feedback Release Guide</title>
+  <style>
+    body { max-width: 900px; margin: 2rem auto; padding: 0 1rem; font: 16px/1.5 system-ui, sans-serif; color: #222; }
+    h1, h2 { color: #111; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    pre { padding: 1rem; overflow-x: auto; background: #f4f4f4; border-radius: 6px; }
+    .warning { padding: 1rem; background: #fff4d6; border-left: 4px solid #d99b00; }
+  </style>
+</head>
+<body>
+  <h1>Pi Audio Feedback Release Guide</h1>
+  <p>This guide publishes <code>pi-audio-feedback</code> to npm and creates the matching GitHub Release.</p>
+
+  <h2>One-time setup</h2>
+  <h3>Confirm Node.js</h3>
+  <pre><code>node --version
+npm --version</code></pre>
+  <p>Use Node.js <strong>&gt;=22.19.0</strong>.</p>
+
+  <h3>Authenticate with npm and GitHub</h3>
+  <pre><code>npm login
+npm whoami
+gh auth status</code></pre>
+
+  <h2>First release: v0.1.0</h2>
+  <p>Run all commands from the repository root.</p>
+
+  <h3>1. Review changes</h3>
+  <pre><code>git status
+git diff</code></pre>
+  <p>Confirm that all intended changes are present.</p>
+
+  <h3>2. Run release checks</h3>
+  <pre><code>npm ci
+npm run lint
+npm run format:check
+npm run typecheck
+npm test
+npm run assets:verify
+npm pack --dry-run --json
+npm audit --omit=dev --audit-level=high</code></pre>
+  <p class="warning">Do not continue if any check fails.</p>
+
+  <h3>3. Inspect package contents</h3>
+  <pre><code>npm pack --dry-run</code></pre>
+  <p>Confirm that runtime source, WAV assets, <code>LICENSE</code>, <code>README.md</code>, <code>package.json</code>, and the PowerShell helper are included. Tests and development files should be excluded.</p>
+
+  <h3>4. Commit and push</h3>
+  <pre><code>git add .
+git commit -m "Prepare release v0.1.0"
+git push origin main</code></pre>
+
+  <h3>5. Publish to npm</h3>
+  <p>This is an unscoped package, so it is public by default.</p>
+  <pre><code>npm publish</code></pre>
+  <p>If two-factor authentication is requested:</p>
+  <pre><code>npm publish --otp=123456</code></pre>
+  <p>Verify publication:</p>
+  <pre><code>npm view pi-audio-feedback version</code></pre>
+
+  <h3>6. Create the GitHub Release</h3>
+  <pre><code>gh release create v0.1.0 --generate-notes --title "v0.1.0"
+gh release view v0.1.0</code></pre>
+
+  <h2>Future releases</h2>
+  <p>Use the appropriate version bump:</p>
+  <pre><code>npm version patch   # 0.1.0 -&gt; 0.1.1
+npm version minor   # 0.1.0 -&gt; 0.2.0
+npm version major   # 0.1.0 -&gt; 1.0.0</code></pre>
+  <p><code>npm version</code> updates <code>package.json</code> and <code>package-lock.json</code>, then creates a Git commit and tag.</p>
+
+  <p>After testing the new version:</p>
+  <pre><code>npm test
+npm run assets:verify
+git push origin main --follow-tags
+npm publish
+gh release create vX.Y.Z --generate-notes --title "vX.Y.Z"</code></pre>
+
+  <h2>Release rules</h2>
+  <ul>
+    <li>The version must match in <code>package.json</code>, npm, the Git tag, and the GitHub Release.</li>
+    <li>A version already published to npm cannot normally be published again.</li>
+    <li>Never publish until automated checks and required manual acoustic checks pass.</li>
+  </ul>
+</body>
+</html>

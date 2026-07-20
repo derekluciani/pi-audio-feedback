@@ -7,10 +7,8 @@
   "files": [
     "src",
     "assets/wav",
-    "assets/media",
     "scripts/play-wav.ps1",
     "LICENSE",
-    "THIRD_PARTY_NOTICES.md",
     "README.md"
   ],
   "scripts": {
@@ -29,8 +27,16 @@
   ],
   "author": "Derek Luciani",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/derekluciani/pi-audio-feedback.git"
+  },
+  "homepage": "https://github.com/derekluciani/pi-audio-feedback",
+  "bugs": {
+    "url": "https://github.com/derekluciani/pi-audio-feedback/issues"
+  },
   "engines": {
-    "node": "20+"
+    "node": ">=22.19.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
@@ -51,9 +57,11 @@
     "vitest": "3.2.7"
   },
   "pi": {
-    "extensions": ["./src"],
-    "image": "assets/media/banner.webp",
-    "video": "assets/media/demo.mp4",
+    "extensions": [
+      "./src"
+    ],
+    "image": "https://raw.githubusercontent.com/derekluciani/pi-audio-feedback/main/assets/media/banner.webp",
+    "video": "https://youtu.be/HLmf6yvpm7g",
     "compatibility": {
       "@earendil-works/pi-coding-agent": ">=0.80.6 <1.0.0"
     }
