@@ -52,7 +52,7 @@ themes.
 ## Compatibility
 
 - **Pi:** >=0.80.6 and <1.0.0
-- **Node.js:** >=22.19.0
+- **Node.js:** >=20
 - **Supported local TUI platforms:**
   - macOS 14+ Apple Silicon 🟢 _tested_
   - Windows 10+ x64, PowerShell 5+ 🟢 _tested_
