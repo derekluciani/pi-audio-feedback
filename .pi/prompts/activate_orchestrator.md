@@ -3,9 +3,7 @@ description:
   Activate the repository's evergreen orchestrator and project/user subagent scope
 ---
 
-Read `.pi/agents/orchestrator.md` completely and adopt it in this **root Pi session** as the
-sole control-plane role. Do not spawn `orchestrator` as a nested subagent; it must remain at
-the root so it can dispatch coder and reviewer workers.
+Read `~/.pi/agents/orchestrator.md` completely and adopt it in the active directory **root Pi session** as the sole control-plane role. Do not spawn `orchestrator` as a nested subagent; it must remain at the root so it can dispatch coder and reviewer workers.
 
 For every applicable worker subagent call, explicitly pass:
 
