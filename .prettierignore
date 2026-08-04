@@ -5,4 +5,5 @@ assets/patches/
 node_modules/
 AGENTS.md
 docs/Coding_Best_Practices.md
+docs/NPM_RELEASE_GUIDE.html
 SUBAGENT_RECALIB_PLAN_response.md
